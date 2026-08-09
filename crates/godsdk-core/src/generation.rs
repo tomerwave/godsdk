@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use super::{
     ApiSpec, GenerationError, GenerationRequest, GenerationResult, IngestionError, render_config,
     render_manifest, render_readme, render_rust_cargo, render_rust_client, render_rust_lock,
-    write_file,
+    render_rust_mock_test, write_file,
 };
 
 pub fn generate(request: &GenerationRequest) -> Result<GenerationResult, GenerationError> {
@@ -86,6 +86,12 @@ fn write_source_and_rust(
         root,
         "sdk/rust/src/lib.rs",
         &render_rust_client(spec),
+        generated,
+    )?;
+    write_file(
+        root,
+        "sdk/rust/tests/mock_server.rs",
+        &render_rust_mock_test(spec),
         generated,
     )
 }

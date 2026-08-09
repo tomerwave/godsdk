@@ -6,7 +6,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 mod generation;
+mod render;
 pub use generation::generate;
+pub(crate) use render::{http_method_name, render_rust_mock_test, rust_identifier};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenerationRequest {
@@ -92,28 +94,50 @@ pub(crate) fn render_rust_client(spec: &ApiSpec) -> String {
     let methods = spec
         .operations
         .iter()
-        .map(|operation| {
-            format!(
-                "    pub fn {}(&self) -> Result<(), SdkError> {{\n        Err(SdkError::TransportNotImplemented)\n    }}\n",
-                rust_identifier(&operation.operation_id)
-            )
-        })
+        .map(render_rust_method)
         .collect::<String>();
     format!(
-        "#[derive(Debug, Default)]\npub struct Client;\n\n#[derive(Debug, PartialEq, Eq)]\npub enum SdkError {{\n    TransportNotImplemented,\n}}\n\nimpl Client {{\n{}\n}}\n",
+        "use std::io::{{Read, Write}};\nuse std::net::TcpStream;\n\n#[derive(Debug)]\npub struct Client {{\n    base_url: String,\n}}\n\n#[derive(Debug, PartialEq, Eq)]\npub enum SdkError {{\n    InvalidBaseUrl,\n    Io(String),\n    InvalidResponse,\n    HttpStatus(u16),\n}}\n\nimpl Client {{\n    pub fn new(base_url: impl Into<String>) -> Self {{\n        Self {{ base_url: base_url.into().trim_end_matches('/').to_string() }}\n    }}\n\n{}\n    fn request(&self, method: &str, path: &str) -> Result<String, SdkError> {{\n        let (mut stream, authority) = self.connect()?;\n        let request = format!(\"{{}} {{}} HTTP/1.1\\r\\nHost: {{}}\\r\\nConnection: close\\r\\n\\r\\n\", method, path, authority);\n        stream.write_all(request.as_bytes()).map_err(|error| SdkError::Io(error.to_string()))?;\n        let mut response = Vec::new();\n        stream.read_to_end(&mut response).map_err(|error| SdkError::Io(error.to_string()))?;\n        parse_response(&response)\n    }}\n\n    fn connect(&self) -> Result<(TcpStream, String), SdkError> {{\n        let authority = self.base_url.strip_prefix(\"http://\").ok_or(SdkError::InvalidBaseUrl)?;\n        let authority = authority.split('/').next().ok_or(SdkError::InvalidBaseUrl)?;\n        let (host, port) = authority.split_once(':').map_or((authority, 80), |parts| (parts.0, parts.1.parse().unwrap_or(80)));\n        let stream = TcpStream::connect((host, port)).map_err(|error| SdkError::Io(error.to_string()))?;\n        Ok((stream, authority.to_string()))\n    }}\n}}\n\nfn parse_response(response: &[u8]) -> Result<String, SdkError> {{\n    let response = String::from_utf8_lossy(response);\n    let (headers, body) = response.split_once(\"\\r\\n\\r\\n\").ok_or(SdkError::InvalidResponse)?;\n    let status = headers.split_whitespace().nth(1).and_then(|value| value.parse().ok()).ok_or(SdkError::InvalidResponse)?;\n    if !(200..300).contains(&status) {{\n        return Err(SdkError::HttpStatus(status));\n    }}\n    Ok(body.to_string())\n}}\n\nfn encode_path_segment(value: &str) -> String {{\n    value.replace('%', \"%25\").replace('/', \"%2F\").replace(' ', \"%20\")\n}}\n",
         methods
     )
 }
 
-pub(crate) fn rust_identifier(value: &str) -> String {
-    let mut identifier = String::new();
-    for (index, character) in value.chars().enumerate() {
-        if character.is_ascii_uppercase() && index > 0 {
-            identifier.push('_');
-        }
-        identifier.push(character.to_ascii_lowercase());
+fn render_rust_method(operation: &Operation) -> String {
+    let parameters = operation
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.location == ParameterLocation::Path)
+        .map(|parameter| format!(", {}: &str", rust_identifier(&parameter.name)))
+        .collect::<String>();
+    let mut path_format = operation.path.clone();
+    let mut path_arguments = Vec::new();
+    for parameter in operation
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.location == ParameterLocation::Path)
+    {
+        path_format = path_format.replace(&format!("{{{}}}", parameter.name), "{}");
+        path_arguments.push(format!(
+            "encode_path_segment({})",
+            rust_identifier(&parameter.name)
+        ));
     }
-    identifier
+    let path = if path_arguments.is_empty() {
+        format!("let path = {:?}.to_string();", path_format)
+    } else {
+        format!(
+            "let path = format!({:?}, {});",
+            path_format,
+            path_arguments.join(", ")
+        )
+    };
+    format!(
+        "    pub fn {}(&self{} ) -> Result<String, SdkError> {{\n        {}\n        self.request(\"{}\", &path)\n    }}\n\n",
+        rust_identifier(&operation.operation_id),
+        parameters,
+        path,
+        http_method_name(operation.method)
+    )
 }
 
 pub(crate) fn render_config(spec: &ApiSpec) -> String {

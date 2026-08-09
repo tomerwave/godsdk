@@ -3,7 +3,8 @@ use predicates::prelude::*;
 
 #[test]
 fn version_reports_the_workspace_version() {
-    let mut command = Command::cargo_bin("godsdk").expect("binary should build");
+    let mut command =
+        Command::cargo_bin("godsdk").unwrap_or_else(|error| panic!("binary should build: {error}"));
 
     command
         .arg("--version")
@@ -14,7 +15,8 @@ fn version_reports_the_workspace_version() {
 
 #[test]
 fn help_lists_the_generate_command() {
-    let mut command = Command::cargo_bin("godsdk").expect("binary should build");
+    let mut command =
+        Command::cargo_bin("godsdk").unwrap_or_else(|error| panic!("binary should build: {error}"));
 
     command
         .arg("--help")
@@ -25,7 +27,8 @@ fn help_lists_the_generate_command() {
 
 #[test]
 fn generate_requires_source_and_output() {
-    let mut command = Command::cargo_bin("godsdk").expect("binary should build");
+    let mut command =
+        Command::cargo_bin("godsdk").unwrap_or_else(|error| panic!("binary should build: {error}"));
 
     command
         .arg("generate")
@@ -36,9 +39,11 @@ fn generate_requires_source_and_output() {
 
 #[test]
 fn generate_reports_not_implemented_without_creating_output() {
-    let temp = tempfile::tempdir().expect("temporary directory should exist");
+    let temp = tempfile::tempdir()
+        .unwrap_or_else(|error| panic!("temporary directory should exist: {error}"));
     let output = temp.path().join("generated");
-    let mut command = Command::cargo_bin("godsdk").expect("binary should build");
+    let mut command =
+        Command::cargo_bin("godsdk").unwrap_or_else(|error| panic!("binary should build: {error}"));
 
     command
         .args(["generate", "--source", "spec.yaml", "--output"])

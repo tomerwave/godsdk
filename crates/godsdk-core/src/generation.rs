@@ -2,10 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use super::typescript::render_typescript_files;
 use super::{
     ApiSpec, GenerationError, GenerationRequest, GenerationResult, IngestionError, render_config,
     render_manifest, render_readme, render_rust_cargo, render_rust_client, render_rust_mock_test,
-    write_file,
+    render_rust_models, write_file,
 };
 
 pub fn generate(request: &GenerationRequest) -> Result<GenerationResult, GenerationError> {
@@ -81,7 +82,19 @@ fn write_source_and_rust(
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
     write_source_file(root, source, generated)?;
-    write_rust_files(root, spec, generated)
+    write_rust_files(root, spec, generated)?;
+    write_typescript_files(root, spec, generated)
+}
+
+fn write_typescript_files(
+    root: &Path,
+    spec: &ApiSpec,
+    generated: &mut Vec<PathBuf>,
+) -> Result<(), GenerationError> {
+    for (path, contents) in render_typescript_files(spec) {
+        write_file(root, path, &contents, generated)?;
+    }
+    Ok(())
 }
 
 fn write_source_file(
@@ -97,12 +110,29 @@ fn write_rust_files(
     spec: &ApiSpec,
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
+    write_rust_manifests(root, spec, generated)?;
+    write_rust_sources(root, spec, generated)?;
+    format_rust_sources(root)
+}
+
+fn write_rust_manifests(
+    root: &Path,
+    spec: &ApiSpec,
+    generated: &mut Vec<PathBuf>,
+) -> Result<(), GenerationError> {
     write_file(
         root,
         "sdk/rust/Cargo.toml",
         &render_rust_cargo(spec),
         generated,
-    )?;
+    )
+}
+
+fn write_rust_sources(
+    root: &Path,
+    spec: &ApiSpec,
+    generated: &mut Vec<PathBuf>,
+) -> Result<(), GenerationError> {
     write_file(
         root,
         "sdk/rust/src/lib.rs",
@@ -111,11 +141,21 @@ fn write_rust_files(
     )?;
     write_file(
         root,
+        "sdk/rust/src/models.rs",
+        &render_rust_models(spec),
+        generated,
+    )?;
+    write_file(
+        root,
         "sdk/rust/tests/mock_server.rs",
         &render_rust_mock_test(spec),
         generated,
-    )?;
+    )
+}
+
+fn format_rust_sources(root: &Path) -> Result<(), GenerationError> {
     format_rust_file(&root.join("sdk/rust/src/lib.rs"))?;
+    format_rust_file(&root.join("sdk/rust/src/models.rs"))?;
     format_rust_file(&root.join("sdk/rust/tests/mock_server.rs"))
 }
 

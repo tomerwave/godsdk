@@ -4,6 +4,9 @@ use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use reqwest::{header, Method, StatusCode};
 use url::Url;
 
+mod models;
+pub use models::*;
+
 #[derive(Clone)]
 pub struct Client {
     base_url: Url,

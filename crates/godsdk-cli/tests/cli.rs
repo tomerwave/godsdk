@@ -36,22 +36,26 @@ fn generate_requires_source_and_output() {
 }
 
 #[test]
-fn generate_reports_not_implemented_without_creating_output() {
+fn generate_creates_a_rust_repository() {
     let temp = tempfile::tempdir()
         .unwrap_or_else(|error| panic!("temporary directory should exist: {error}"));
     let output_path = temp.path().join("generated");
+    let source = format!(
+        "{}/../../fixtures/openapi/minimal-3.1.yaml",
+        env!("CARGO_MANIFEST_DIR")
+    );
     let output = run(&[
         "generate",
         "--source",
-        "spec.yaml",
+        &source,
         "--output",
         output_path.to_str().unwrap_or("generated"),
     ]);
 
-    assert!(!output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "SDK generation is not implemented yet\n"
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!output_path.exists());
+    assert!(output_path.join("sdk/rust/src/lib.rs").is_file());
 }

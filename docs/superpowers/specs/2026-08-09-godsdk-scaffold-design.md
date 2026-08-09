@@ -93,4 +93,3 @@ The following remain intentionally open until the first implementation design:
 - binding target order and compatibility guarantees;
 - generated artifact layout and overwrite/diff behavior;
 - release package names and multi-ecosystem publishing strategy.
-

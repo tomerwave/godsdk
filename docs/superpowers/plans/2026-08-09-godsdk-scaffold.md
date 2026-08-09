@@ -204,4 +204,3 @@ Expected: only the approved scaffold, documentation, configuration, and CI files
 - [ ] **Step 4: Push and open a draft pull request**
 
 Push `agent/godsdk-scaffold` with tracking and create a draft PR against `main`. The body must summarize the scaffold, list explicit non-goals, and include the complete verification commands and results.
-

@@ -1,0 +1,58 @@
+openapi: 3.1.1
+info:
+  title: Schemas and composition fixture API
+  version: 1.0.0
+paths:
+  /catalog:
+    get:
+      operationId: listCatalog
+      responses:
+        '200':
+          description: Catalog page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Page'
+components:
+  schemas:
+    Page:
+      type: object
+      required: [items, next]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Item'}
+        next:
+          type: [string, 'null']
+    Item:
+      oneOf:
+        - {$ref: '#/components/schemas/Product'}
+        - {$ref: '#/components/schemas/Service'}
+      discriminator:
+        propertyName: kind
+    Product:
+      allOf:
+        - {$ref: '#/components/schemas/ItemBase'}
+        - type: object
+          required: [sku]
+          properties:
+            sku: {type: string}
+    Service:
+      allOf:
+        - {$ref: '#/components/schemas/ItemBase'}
+        - type: object
+          required: [duration_minutes]
+          properties:
+            duration_minutes: {type: integer, minimum: 1}
+    ItemBase:
+      type: object
+      required: [id, kind, metadata]
+      properties:
+        id: {type: string}
+        kind: {type: string, enum: [product, service]}
+        metadata:
+          type: object
+          additionalProperties: {type: string}
+        related:
+          type: array
+          items: {$ref: '#/components/schemas/Item'}

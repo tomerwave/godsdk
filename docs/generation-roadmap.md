@@ -19,11 +19,14 @@ That means generation must produce, at minimum:
 ```text
 generated-repo/
 ├── api/openapi.yaml                         # copied or normalized source input
-├── sdk/rust/                                # generated Rust client/core
+├── sdk/rust/                                # generated Rust SDK and single behavior source
+│   ├── core/                                # endpoint/auth/serialization/retry logic
+│   └── client/                              # public Rust SDK
 ├── sdk/python/                              # generated Python package when selected
 ├── sdk/typescript/                          # generated JS runtime + TS declarations
 ├── tests/                                    # generated contract and smoke tests
-├── .godsdk/manifest.json                     # generator version, spec hash, ownership, targets
+├── .godsdk/config.yaml                       # user intent and release destinations
+├── .godsdk/manifest.json                     # machine state: hashes and ownership
 ├── godlint.yaml                              # checked-in source-policy configuration
 ├── godharness.yaml                           # checked-in context configuration
 ├── .agents/                                  # Codex skills/context installed by Godharness
@@ -33,6 +36,8 @@ generated-repo/
 ├── .github/workflows/godlint.yml             # deterministic policy gate
 ├── .github/workflows/godharness.yml          # context/configuration gate
 ├── .github/workflows/test-generated.yml      # generated target test matrix
+├── .github/workflows/release.yml             # crates.io, PyPI, npm, GitHub Releases
+├── NEEDS-YOUR-ATTENTION.md                   # only unresolved external setup
 └── README.md                                 # exact commands for the selected targets
 ```
 
@@ -115,7 +120,9 @@ requirement, not a later optimization.
 
 ### Manifest
 
-Each generated repository carries `.godsdk/manifest.json` with:
+Each generated repository carries `.godsdk/config.yaml` for user intent and
+`.godsdk/manifest.json` for machine state. The config selects targets, names packages, and enables
+the concrete release destinations. The manifest carries:
 
 - generator version and template-set version;
 - canonical input spec digest and resolved-reference digests;
@@ -123,6 +130,9 @@ Each generated repository carries `.godsdk/manifest.json` with:
 - generated file path, target, template identifier, and last-generated content digest;
 - governance bundle version and Godlint/Godharness versions;
 - generation options that affect file ownership or layout.
+
+The generated Rust SDK is the single implementation source. Python and TypeScript bindings expose
+the Rust SDK surface and must not duplicate endpoint behavior.
 
 ### Regeneration algorithm
 
@@ -152,6 +162,15 @@ when the repository is out of date. A target-specific run must not rewrite unrel
 shared files are regenerated only when their computed inputs change.
 
 ## GitHub Action and workflow design
+
+### Release contract
+
+The generated repository includes release automation for crates.io, PyPI, npm, and GitHub Releases
+from the first release implementation. The CLI generates package metadata, workflows, version
+wiring, OIDC permissions, checksums, and pre-release checks. `NEEDS-YOUR-ATTENTION.md` contains only
+external actions the CLI cannot perform, such as registering a package or configuring a trusted
+publisher/environment. Bun is supported as a consumer of the npm package, not as a separate
+registry.
 
 ### Action contract
 

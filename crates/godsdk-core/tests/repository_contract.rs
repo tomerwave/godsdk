@@ -2,6 +2,10 @@ const MANIFEST_SCHEMA: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../schemas/godsdk-manifest.schema.json"
 ));
+const CONFIG_SCHEMA: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../schemas/godsdk-config.schema.json"
+));
 const MINIMAL_SPEC: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/openapi/minimal-3.1.yaml"
@@ -28,6 +32,19 @@ fn manifest_schema_locks_required_repository_metadata() {
     for target in ["rust", "python", "typescript"] {
         assert!(MANIFEST_SCHEMA.contains(&format!("\"{target}\"")));
     }
+}
+
+#[test]
+fn config_schema_locks_user_intent_and_release_destinations() {
+    for required in ["project", "spec", "targets", "release"] {
+        assert!(CONFIG_SCHEMA.contains(&format!("\"{required}\"")));
+    }
+
+    for registry in ["crates_io", "pypi", "npm", "github"] {
+        assert!(CONFIG_SCHEMA.contains(&format!("\"{registry}\"")));
+    }
+
+    assert!(CONFIG_SCHEMA.contains("publish_provenance"));
 }
 
 #[test]

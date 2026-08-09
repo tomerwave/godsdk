@@ -18,10 +18,14 @@ reported as successful.
 <output>/
 ├── api/openapi.yaml
 ├── sdk/rust/
+│   ├── core/                         # single source of SDK behavior
+│   └── client/                       # public Rust SDK
 ├── sdk/python/                         # when python is selected
 ├── sdk/typescript/                     # when typescript is selected
 ├── tests/
-├── .godsdk/manifest.json
+├── .godsdk/
+│   ├── config.yaml                   # user intent and release destinations
+│   └── manifest.json                  # machine-managed generation state
 ├── godlint.yaml
 ├── godharness.yaml
 ├── .agents/
@@ -31,11 +35,64 @@ reported as successful.
 ├── .github/workflows/godlint.yml
 ├── .github/workflows/godharness.yml
 ├── .github/workflows/test-generated.yml
+├── .github/workflows/release.yml
+├── NEEDS-YOUR-ATTENTION.md            # only when manual setup remains
 └── README.md
 ```
 
 Target directories that were not selected MUST NOT be created. Shared files such as the README,
 manifest, governance configuration, and workflows are regenerated only when their inputs change.
+
+The Rust SDK core is the single implementation source for endpoint behavior, serialization,
+authentication, retries, and response handling. Python and TypeScript are bindings and packaging
+surfaces over that Rust behavior; they MUST NOT independently reimplement endpoint logic.
+
+## User configuration and generated state
+
+`.godsdk/config.yaml` is user-editable configuration and MUST conform to
+[`schemas/godsdk-config.schema.json`](../schemas/godsdk-config.schema.json). It contains project
+identity, the input specification, selected targets, and the concrete release destinations.
+
+`.godsdk/manifest.json` is machine-managed state. It records what GodSDK generated, which inputs
+were used, and which files are safe to update or remove. It MUST NOT contain credentials or replace
+the user's configuration.
+
+Example configuration:
+
+```yaml
+project:
+  name: petstore-sdk
+  version: 0.1.0
+
+spec:
+  path: api/openapi.yaml
+  allow_remote_refs: false
+
+targets: [rust, python, typescript]
+
+release:
+  enabled: true
+  crates_io:
+    enabled: true
+    package: petstore-sdk
+  pypi:
+    enabled: true
+    package: petstore-sdk
+  npm:
+    enabled: true
+    package: '@acme/petstore-sdk'
+    publish_provenance: true
+  github:
+    enabled: true
+    workflow: release.yml
+```
+
+The release workflow MUST support crates.io, PyPI, npm, and GitHub Releases from the first release
+implementation. It MUST build and test the Rust core first, publish native/platform npm packages
+before the package that consumes them, use PyPI and npm trusted publishing where configured, publish
+Cargo packages in dependency order, and attach binaries/checksums to GitHub Releases. Bun is a
+consumer tool; JavaScript packages publish to npm and remain compatible with npm, pnpm, Yarn, and
+Bun.
 
 ## Ownership and update rules
 
@@ -94,3 +151,11 @@ Generation MUST stage these artifacts as part of the same repository transaction
 
 The generator MUST fail if required governance files are missing or if either tool reports a
 problem. It must never claim a successful generated repository while omitting governance.
+
+## Manual attention contract
+
+The CLI MUST automate all repository-local work, including package metadata, release workflows,
+OIDC permissions, version wiring, checksums, and pre-release validation. It may create
+`NEEDS-YOUR-ATTENTION.md` only for unresolved external actions, such as registering a package or
+configuring a trusted publisher/environment in an external service. The file MUST be omitted or
+removed when no manual actions remain.

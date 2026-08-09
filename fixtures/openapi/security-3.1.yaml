@@ -1,0 +1,48 @@
+openapi: 3.1.1
+info:
+  title: Security fixture API
+  version: 1.0.0
+paths:
+  /private:
+    get:
+      operationId: getPrivate
+      security:
+        - bearerAuth: []
+      responses:
+        '200': {description: Private response}
+  /admin:
+    get:
+      operationId: getAdmin
+      security:
+        - apiKeyAuth: []
+        - basicAuth: []
+      responses:
+        '200': {description: Admin response}
+  /oauth:
+    get:
+      operationId: getOAuthResource
+      security:
+        - oauth2:
+            - read:resource
+      responses:
+        '200': {description: OAuth response}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    basicAuth:
+      type: http
+      scheme: basic
+    oauth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.test/authorize
+          tokenUrl: https://auth.example.test/token
+          scopes:
+            read:resource: Read resource

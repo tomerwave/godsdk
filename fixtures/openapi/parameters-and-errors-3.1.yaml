@@ -1,0 +1,72 @@
+openapi: 3.1.1
+info:
+  title: Parameters and errors fixture API
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:4010
+paths:
+  /accounts/{account_id}/documents:
+    post:
+      operationId: createDocument
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: X-Request-Id
+          in: header
+          required: true
+          schema: {type: string}
+        - name: dry_run
+          in: query
+          required: false
+          schema: {type: boolean, default: false}
+        - name: session
+          in: cookie
+          required: false
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocumentInput'
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '201':
+          description: Created document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Document'
+        '400':
+          description: Invalid request
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404': {description: Account not found}
+components:
+  schemas:
+    DocumentInput:
+      type: object
+      required: [title]
+      properties:
+        title: {type: string}
+        content: {type: string}
+    Document:
+      allOf:
+        - $ref: '#/components/schemas/DocumentInput'
+        - type: object
+          required: [id]
+          properties:
+            id: {type: string, format: uuid}
+    Problem:
+      type: object
+      required: [code, message]
+      properties:
+        code: {type: string}
+        message: {type: string}

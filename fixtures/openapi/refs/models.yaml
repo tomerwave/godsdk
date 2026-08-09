@@ -1,0 +1,14 @@
+components:
+  parameters:
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      schema: {type: string}
+  schemas:
+    User:
+      type: object
+      required: [id, email]
+      properties:
+        id: {type: string}
+        email: {type: string, format: email}

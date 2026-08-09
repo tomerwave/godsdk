@@ -1,65 +1,85 @@
-godsdk Architecture & Design Specification
-1. Executive Summary
-Traditional SDK generators emit standalone, unoptimized client libraries for every target language. This approach leads to fragmented logic, duplicate bug fixes across multiple codebases, and inconsistent runtime performance.
-⁠godsdk⁠ solves this by generating a single, robust, strongly typed Rust HTTP client core from OpenAPI (or custom) specs, and then exposing that single core to other target ecosystems through zero-cost native FFI bindings or runtime addons (e.g., ⁠PyO3⁠, ⁠napi-rs⁠, ⁠wasm-bindgen⁠, ⁠UniFFI⁠).
-2. Key Advantages
-1. Write Once, Fix Everywhere: Protocol logic, security headers, auth token refresh loops, rate limiting, and HTTP retry policies live entirely inside the Rust core crate.
-2. Type Safety & Performance: Leverage Rust's memory safety, fearless concurrency, and zero-cost abstractions across all higher-level language bindings.
-3. Consistent Behavior: Every language wrapper uses the same underlying execution engine, guaranteeing consistent response parsing and error handling.
-4. Single-Binary CLI Generator: Built in Rust, ⁠godsdk⁠ compiles to a dependency-free binary that runs lightning-fast in CI/CD pipelines.
-3. System Architecture & Pipeline
-The ⁠godsdk⁠ engine processes specs through four modular stages:
-Stage 1: Ingestion
-￼ Parses OpenAPI 3.0/3.1 JSON/YAML schemas.
-￼ Resolves local and remote recursive ⁠$ref⁠ dependencies.
-￼ Validates schema completeness and flags ambiguous endpoints.
-Stage 2: Intermediate Representation (IR) Normalization
-The raw OpenAPI object is transformed into an internal, strongly typed Rust IR struct tree (⁠godsdk_ir⁠).
-￼ Endpoints: HTTP methods, path strings, query parameters, header keys, request payloads, and status codes.
-￼ Models: Struct definitions, enums (tagged/untagged), recursive types, optional vs. mandatory fields.
-￼ Authentication: Bearer tokens, API keys, OAuth2 grant structures.
-￼ Casing Normalization: Converts spec strings into canonical cases using ⁠heck⁠ (⁠snake_case⁠ for Rust/Python, ⁠camelCase⁠ for JS/TS).
-Stage 3: Core Rust Crate Generator
-Generates a publishable Rust crate (⁠<sdk-name>-core⁠):
-￼ HTTP Client Engine: ⁠reqwest⁠ + ⁠tokio⁠ (or lightweight ⁠ureq⁠ for sync targets).
-￼ Serialization Layer: ⁠serde⁠ + ⁠serde_json⁠.
-￼ Templating: ⁠askama⁠ (Jinja-style templates pre-compiled into the ⁠godsdk⁠ binary for speed).
-Stage 4: Multi-Language Bindings Engine
-Generates ecosystem-native wrappers around the Core Rust crate:
-Target Language / Platform
-Binding Engine
-Output Artifact
-Python
-PyO3 + maturin
-Native Wheel (.whl), asyncio compatible
-Node.js / TypeScript
-napi-rs
-.node native binary + .d.ts type declarations
-Browser / Web
-wasm-bindgen
-WebAssembly package + JS glue code
-Swift / Kotlin / Go
-UniFFI / Diplomat
-Native CFFI bridges and JNI/Swift interfaces
+# GodSDK
 
-4. Recommended Tech Stack
-￼ Generator CLI: ⁠clap⁠ (v4 with derive macros)
-￼ Spec Parsing: ⁠openapiv3⁠, ⁠serde_yaml⁠, ⁠serde_json⁠, ⁠url⁠
-￼ Templating Engine: ⁠askama⁠ or ⁠rinja⁠
-￼ Rust Formatting: ⁠prettyplease⁠ or standard ⁠rustfmt⁠ execution
-￼ Case Transformations: ⁠heck⁠
-￼ Type Synthesis: ⁠typify⁠ (for JSON Schema conversion)
-5. Development Roadmap
-Phase 1: Core Engine & Ingestion (V0.1)
-￼ [ ] Implement CLI interface for ⁠godsdk⁠ (⁠godsdk generate -s spec.yaml -o ./out⁠).
-￼ [ ] Build OpenAPI 3.0/3.1 parser into normalized ⁠godsdk_ir⁠.
-￼ [ ] Implement ⁠askama⁠ templates for generating standalone, idiomatic Rust SDK crates.
-Phase 2: Python & Node.js Bindings (V0.2)
-￼ [ ] Add ⁠PyO3⁠ binding generation for native Python modules with ⁠async/await⁠ support.
-￼ [ ] Add ⁠napi-rs⁠ generator for Node.js/TypeScript native addons with generated ⁠.d.ts⁠ types.
-Phase 3: WebAssembly & Mobile Bridge (V0.3)
-￼ [ ] Add ⁠wasm-bindgen⁠ build profile for browser compatibility.
-￼ [ ] Integrate ⁠UniFFI⁠ template generation for Swift and Kotlin targets.
-Phase 4: Developer Tooling & Plugin Ecosystem (V1.0)
-￼ [ ] Add custom extension hooks for user-defined templates.
-￼ [ ] Implement interactive dry-runs and schema diff warnings.
+GodSDK is the technical SDK-generation tool in the Godsuite. It is planned as a Rust-based
+pipeline that turns OpenAPI or custom API specifications into one strongly typed Rust client
+core and ecosystem-native bindings.
+
+> **Status: pre-alpha scaffold.** The workspace and CLI contract exist. Generation behavior is
+> intentionally not implemented yet.
+
+## The Godsuite
+
+- **Godlint** enforces deterministic source-code and repository policy.
+- **Godharness** provides project and engineering context to coding agents.
+- **GodSDK** will generate SDKs from technical API descriptions.
+
+GodSDK is not another linter and does not treat generated code as proof of compliance. Godlint
+and Godharness are development tools used to keep this repository understandable and healthy
+while the generator is built.
+
+## Current CLI
+
+Install Rust 1.97.1, then run:
+
+```sh
+cargo run -p godsdk-cli -- --help
+cargo run -p godsdk-cli -- generate --source spec.yaml --output ./generated
+```
+
+The `generate` command currently validates its command-line shape and reports that generation is
+not implemented. It does not read the source, create the output directory, resolve references,
+access the network, or modify the filesystem.
+
+## Planned architecture
+
+```text
+OpenAPI or custom specification
+                │
+                ▼
+       Ingestion and validation
+                │
+                ▼
+       Normalized godsdk IR
+                │
+                ▼
+        Rust client-core generator
+                │
+                ▼
+   Python · Node · Web · Mobile bindings
+```
+
+The intended stages are:
+
+1. Ingest OpenAPI 3.0/3.1 JSON and YAML, including local and remote reference handling.
+2. Normalize endpoints, models, authentication, casing, and response shapes into a typed IR.
+3. Generate a publishable Rust client core with shared HTTP, serialization, auth, retry, and
+   rate-limit behavior.
+4. Generate native bindings for Python, Node.js/TypeScript, WebAssembly, Swift, Kotlin, and
+   other supported targets.
+
+The boundaries, dependency choices, generated artifact layout, and binding order are not yet
+final. See [the architecture notes](docs/architecture.md) for the decisions intentionally
+deferred.
+
+## Development
+
+```sh
+rustup toolchain install 1.97.1 --profile minimal
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --locked
+cargo build --workspace --locked
+```
+
+Read [local development](docs/local-development.md) before changing the workspace and
+[contributing](CONTRIBUTING.md) before opening a pull request.
+
+## Open source
+
+GodSDK is released under the [MIT License](LICENSE). See the [security policy](SECURITY.md) for
+private vulnerability reporting and the [Code of Conduct](CODE_OF_CONDUCT.md) for participation
+expectations.
+
+Repository automation also keeps Godlint and Godharness current through a reviewable scheduled
+workflow. The allowed release level is configured in `.github/godsuite-versions.yml` and can be
+overridden manually for patch, minor, or major updates.

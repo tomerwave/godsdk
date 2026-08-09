@@ -1,0 +1,36 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Check workspace
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install 1.97.1 --profile minimal
+
+      - name: Install Rust quality components
+        run: rustup component add rustfmt clippy --toolchain 1.97.1
+
+      - name: Check formatting
+        run: cargo +1.97.1 fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo +1.97.1 clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo +1.97.1 test --workspace --locked
+
+      - name: Build workspace
+        run: cargo +1.97.1 build --workspace --locked

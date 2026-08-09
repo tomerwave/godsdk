@@ -1,0 +1,25 @@
+[package]
+name = "godsdk-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Command-line interface for the GodSDK generator."
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "godsdk"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap.workspace = true
+godsdk-core = { path = "../godsdk-core" }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"

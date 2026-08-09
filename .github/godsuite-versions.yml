@@ -1,0 +1,6 @@
+# Versions used by repository automation. The update workflow only moves a dependency within
+# this policy unless workflow_dispatch explicitly selects a wider policy.
+update-policy: minor
+
+godlint: 0.7.0
+godharness: 0.1.6

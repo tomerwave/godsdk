@@ -1,0 +1,41 @@
+name: Update Godsuite tools
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      update-level:
+        description: Maximum release level to accept
+        required: false
+        type: choice
+        default: minor
+        options: [patch, minor, major]
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    name: Update Godlint and Godharness
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update bounded Godsuite versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_LEVEL: ${{ inputs.update-level || '' }}
+        run: python3 scripts/update_godsuite.py --level "$REQUESTED_LEVEL"
+
+      - name: Install the selected Godharness release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/install_godharness.sh
+
+      - name: Refresh repository Godharness content
+        run: godharness update
+
+      - name: Commit if anything changed
+        run: scripts/commit_godsuite_update.sh

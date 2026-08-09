@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::Command;
 
 use godsdk_core::{GenerationRequest, generate};
 
@@ -35,6 +36,29 @@ fn generates_a_compiling_rust_repository_skeleton() {
     let manifest = std::fs::read_to_string(request.output_path().join(".godsdk/manifest.json"))
         .unwrap_or_else(|error| panic!("manifest is readable: {error}"));
     assert!(serde_json::from_str::<serde_json::Value>(&manifest).is_ok());
+}
+
+#[test]
+fn generated_client_calls_a_real_mock_server() {
+    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+    let request =
+        GenerationRequest::new(fixture("minimal-3.1.yaml"), output.path().join("generated"));
+    match generate(&request) {
+        Ok(_) => {}
+        Err(error) => panic!("generation succeeds: {error}"),
+    }
+
+    let result = Command::new("cargo")
+        .args(["test", "--manifest-path", "sdk/rust/Cargo.toml", "--locked"])
+        .current_dir(request.output_path())
+        .output()
+        .unwrap_or_else(|error| panic!("generated cargo test runs: {error}"));
+    assert!(
+        result.status.success(),
+        "generated test failed:\n{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
 }
 
 #[test]

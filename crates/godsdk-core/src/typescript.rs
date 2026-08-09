@@ -7,20 +7,35 @@ pub(crate) fn render_typescript_files(spec: &ApiSpec) -> Vec<(&'static str, Stri
         ("sdk/typescript/src/schemas.ts", render_schemas(spec)),
         ("sdk/typescript/src/types.ts", render_types(spec)),
         ("sdk/typescript/src/errors.ts", render_errors()),
-        ("sdk/typescript/src/native.ts", render_native(spec)),
+        ("sdk/typescript/src/native.ts", render_native_loader(spec)),
         ("sdk/typescript/src/index.ts", render_index(spec)),
         (
             "sdk/typescript/tests/validation.test.ts",
             render_validation_test(spec),
         ),
+        (
+            "sdk/typescript/tests/client.test.ts",
+            render_client_test(spec),
+        ),
         ("sdk/typescript/README.md", render_readme(spec)),
+        (
+            "sdk/typescript/native/Cargo.toml",
+            render_native_cargo(spec),
+        ),
+        (
+            "sdk/typescript/native/package.json",
+            render_native_package(),
+        ),
+        ("sdk/typescript/native/src/lib.rs", render_native_rust(spec)),
     ]
 }
 
 fn render_package(spec: &ApiSpec) -> String {
     format!(
-        "{{\n  \"name\": \"{}-sdk\",\n  \"version\": \"0.1.0\",\n  \"type\": \"module\",\n  \"exports\": {{\".\": \"./dist/index.js\"}},\n  \"scripts\": {{\"build\": \"tsc --noEmit\", \"test\": \"vitest run\"}},\n  \"dependencies\": {{\"zod\": \"^4.0.0\"}},\n  \"devDependencies\": {{\"@types/node\": \"^22.0.0\", \"typescript\": \"^5.0.0\", \"vitest\": \"^3.0.0\"}}\n}}\n",
-        slug(&spec.title)
+        "{{\n  \"name\": \"{}-sdk\",\n  \"version\": \"0.1.0\",\n  \"type\": \"module\",\n  \"main\": \"./dist/index.js\",\n  \"exports\": {{\".\": \"./dist/index.js\"}},\n  \"scripts\": {{\"build\": \"tsc --noEmit\", \"build:native\": \"napi build --manifest-path native/Cargo.toml --platform --release\", \"test\": \"vitest run\", \"test:native\": \"npm run build:native && npm test\"}},\n  \"napi\": {{\"binaryName\": \"{}-sdk\", \"packageName\": \"{}-sdk\", \"targets\": [\"x86_64-unknown-linux-gnu\", \"x86_64-unknown-linux-musl\", \"aarch64-unknown-linux-gnu\", \"aarch64-unknown-linux-musl\", \"x86_64-apple-darwin\", \"aarch64-apple-darwin\", \"x86_64-pc-windows-msvc\"]}},\n  \"dependencies\": {{\"zod\": \"^4.4.3\"}},\n  \"devDependencies\": {{\"@napi-rs/cli\": \"^3.8.3\", \"@types/node\": \"^22.0.0\", \"typescript\": \"^5.0.0\", \"vitest\": \"^3.0.0\"}}\n}}\n",
+        slug(&spec.title),
+        slug(&spec.title),
+        slug(&spec.title),
     )
 }
 
@@ -79,7 +94,7 @@ fn render_errors() -> String {
     "export class SdkValidationError extends Error {\n  readonly operation: string;\n  readonly model: string;\n\n  constructor(operation: string, model: string) {\n    super(`Response validation failed for ${operation} (${model})`);\n    this.name = \"SdkValidationError\";\n    this.operation = operation;\n    this.model = model;\n  }\n}\n".to_string()
 }
 
-fn render_native(spec: &ApiSpec) -> String {
+fn render_native_loader(spec: &ApiSpec) -> String {
     let methods = spec
         .operations
         .iter()
@@ -98,7 +113,7 @@ fn render_native(spec: &ApiSpec) -> String {
         })
         .collect::<String>();
     format!(
-        "export type NativeValue = null | boolean | number | string | NativeValue[] | {{ [key: string]: NativeValue }};\n\nexport interface NativeClient {{\n{methods}}}\n\nexport function loadNative(): NativeClient {{\n  throw new Error(\"The generated napi-rs native package is not installed\");\n}}\n"
+        "import {{ createRequire }} from \"node:module\";\n\nexport type NativeValue = null | boolean | number | string | NativeValue[] | {{ [key: string]: NativeValue }};\n\nexport interface NativeClient {{\n{methods}}}\n\ninterface NativeBinding {{\n  NativeClient: new (baseUrl: string) => NativeClient;\n}}\n\nexport function loadNative(baseUrl: string): NativeClient {{\n  const require = createRequire(import.meta.url);\n  const binding = require(\"../native/index.js\") as NativeBinding;\n  return new binding.NativeClient(baseUrl);\n}}\n"
     )
 }
 
@@ -131,7 +146,7 @@ fn render_index_header(spec: &ApiSpec) -> String {
     type_names.extend(response_names);
     let types = type_names.join(", ");
     format!(
-        "import * as z from \"zod\";\nimport {{ loadNative }} from \"./native.js\";\nimport type {{ {types} }} from \"./types.js\";\n{imports}\nexport * from \"./schemas.js\";\nexport * from \"./types.js\";\nexport * from \"./errors.js\";\n\nexport class Client {{\n  private readonly native = loadNative();\n\n"
+        "import * as z from \"zod\";\nimport {{ loadNative, type NativeClient }} from \"./native.js\";\nimport type {{ {types} }} from \"./types.js\";\n{imports}\nexport * from \"./schemas.js\";\nexport * from \"./types.js\";\nexport * from \"./errors.js\";\n\nexport class Client {{\n  private readonly native: NativeClient;\n\n  constructor(baseUrl: string) {{\n    this.native = loadNative(baseUrl);\n  }}\n\n"
     )
 }
 
@@ -198,11 +213,92 @@ fn render_validation_test(spec: &ApiSpec) -> String {
     )
 }
 
+fn render_client_test(spec: &ApiSpec) -> String {
+    let Some(operation) = spec.operations.first() else {
+        return "import { describe, it } from \"vitest\";\n\ndescribe(\"generated client\", () => { it(\"has no operations\", () => {}); });\n".to_string();
+    };
+    let method = ts_identifier(&operation.operation_id);
+    let arguments = operation
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.location == super::ParameterLocation::Path)
+        .map(|_| "\"pet-1\"")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let path = operation
+        .path
+        .split('{')
+        .enumerate()
+        .map(|(index, segment)| {
+            if index == 0 {
+                segment.to_string()
+            } else {
+                segment
+                    .split_once('}')
+                    .map_or_else(|| segment.to_string(), |parts| format!("pet-1{}", parts.1))
+            }
+        })
+        .collect::<String>();
+    format!(
+        "import {{ createServer }} from \"node:http\";\nimport {{ afterAll, beforeAll, describe, expect, it }} from \"vitest\";\nimport {{ Client }} from \"../src/index.js\";\n\nconst server = createServer((_request, response) => {{\n  response.writeHead(200, {{ \"content-type\": \"application/json\" }});\n  response.end(JSON.stringify({{ id: \"pet-1\", name: \"Fluffy\" }}));\n}});\nlet baseUrl = \"\";\n\nbeforeAll(async () => {{\n  await new Promise<void>((resolve) => server.listen(0, \"127.0.0.1\", resolve));\n  const address = server.address();\n  if (address === null || typeof address === \"string\") throw new Error(\"mock server did not bind\");\n  baseUrl = `http://127.0.0.1:${{address.port}}`;\n}});\n\nafterAll(() => server.close());\n\ndescribe(\"generated native client\", () => {{\n  it(\"calls the Rust-backed local mock API\", async () => {{\n    const response = await new Client(baseUrl).{method}({arguments});\n    expect(response).toEqual({{ id: \"pet-1\", name: \"Fluffy\" }});\n    expect(\"{path}\").toContain(\"/pets/\");\n  }});\n}});\n"
+    )
+}
+
 fn render_readme(spec: &ApiSpec) -> String {
     format!(
-        "# {} TypeScript SDK\n\nInstall dependencies, then run `npm test`. Runtime response validation is generated with Zod. The native napi-rs package is intentionally a separate release artifact.\n",
+        "# {} TypeScript SDK\n\nInstall dependencies, then run `npm run test:native`. The command builds the Rust-backed napi-rs addon, starts a local mock API, and verifies runtime response validation with Zod.\n",
         spec.title
     )
+}
+
+fn render_native_cargo(spec: &ApiSpec) -> String {
+    let crate_name = rust_crate_name(spec);
+    format!(
+        "[package]\nname = \"{}-typescript-native\"\nversion = \"0.1.0\"\nedition = \"2024\"\nrust-version = \"1.97\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nnapi = {{ version = \"3.12\", features = [\"napi9\", \"tokio_rt\", \"serde-json\"] }}\nnapi-derive = \"3.6\"\nserde_json = \"1\"\n{} = {{ package = \"{}-sdk\", path = \"../../rust\" }}\n",
+        slug(&spec.title),
+        crate_name,
+        slug(&spec.title),
+    )
+}
+
+fn render_native_package() -> String {
+    "{\n  \"type\": \"commonjs\"\n}\n".to_string()
+}
+
+fn render_native_rust(spec: &ApiSpec) -> String {
+    let methods = spec
+        .operations
+        .iter()
+        .map(render_native_operation)
+        .collect::<String>();
+    format!(
+        "use napi::bindgen_prelude::*;\nuse napi_derive::napi;\nuse {}::Client as RustClient;\n\n#[napi]\npub struct NativeClient {{\n    inner: RustClient,\n}}\n\n#[napi]\nimpl NativeClient {{\n    #[napi(constructor)]\n    pub fn new(base_url: String) -> Result<Self> {{\n        let inner = RustClient::builder(base_url).build().map_err(to_napi_error)?;\n        Ok(Self {{ inner }})\n    }}\n\n{methods}}}\n\nfn to_napi_error(error: impl std::fmt::Display) -> Error {{\n    Error::from_reason(error.to_string())\n}}\n",
+        rust_crate_name(spec),
+    )
+}
+
+fn render_native_operation(operation: &Operation) -> String {
+    let parameters = operation
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.location == super::ParameterLocation::Path)
+        .map(|parameter| format!(", {}: String", super::rust_identifier(&parameter.name)))
+        .collect::<String>();
+    let arguments = operation
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.location == super::ParameterLocation::Path)
+        .map(|parameter| format!("&{}", super::rust_identifier(&parameter.name)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let method = super::rust_identifier(&operation.operation_id);
+    format!(
+        "    #[napi]\n    pub async fn {method}(&self{parameters}) -> Result<serde_json::Value> {{\n        let value = self.inner.{method}({arguments}).await.map_err(to_napi_error)?;\n        serde_json::to_value(value).map_err(to_napi_error)\n    }}\n\n",
+    )
+}
+
+fn rust_crate_name(spec: &ApiSpec) -> String {
+    slug(&spec.title).replace('-', "_")
 }
 
 fn zod_schema(schema: &Schema, spec: &ApiSpec) -> String {

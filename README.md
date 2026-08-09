@@ -4,8 +4,9 @@ GodSDK is the technical SDK-generation tool in the Godsuite. It is planned as a 
 pipeline that turns OpenAPI or custom API specifications into one strongly typed Rust client
 core and ecosystem-native bindings.
 
-> **Status: pre-alpha runtime.** Rust SDK generation and a production-oriented async HTTP client
-> are implemented. Typed schema models and additional language bindings remain in progress.
+> **Status: pre-alpha runtime.** Rust SDK generation, typed schema models, and a local
+> Rust-backed Node.js/TypeScript target are implemented. Cross-platform native packaging and
+> additional language bindings remain in progress.
 
 ## The Godsuite
 
@@ -26,9 +27,9 @@ cargo run -p godsdk-cli -- --help
 cargo run -p godsdk-cli -- generate --source spec.yaml --output ./generated
 ```
 
-The `generate` command reads an OpenAPI 3.1 document and creates a standalone Rust SDK repository
-with a Tokio/reqwest client, a local mock-server E2E test, Cargo.lock, Godlint, and Godharness
-configuration.
+The `generate` command reads an OpenAPI 3.1 document and creates a standalone SDK repository with
+a Tokio/reqwest Rust client, a Zod-validated TypeScript facade backed by a napi-rs native crate,
+local mock-server E2E tests, Cargo.lock, Godlint, and Godharness configuration.
 
 To try the generated client:
 
@@ -38,6 +39,7 @@ cargo run -p godsdk-cli -- generate \
   --source fixtures/openapi/minimal-3.1.yaml \
   --output "$temporary/generated"
 (cd "$temporary/generated" && cargo test --manifest-path sdk/rust/Cargo.toml --locked)
+(cd "$temporary/generated/sdk/typescript" && npm install && npm run test:native)
 ```
 
 ## Planned architecture
@@ -93,3 +95,6 @@ expectations.
 Repository automation also keeps Godlint and Godharness current through a reviewable scheduled
 workflow. The allowed release level is configured in `.github/godsuite-versions.yml` and can be
 overridden manually for patch, minor, or major updates.
+
+See [release setup](docs/release-setup.md) for the external credentials and trusted-publisher
+configuration that cannot be generated safely.

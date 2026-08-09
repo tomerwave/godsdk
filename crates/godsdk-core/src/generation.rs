@@ -175,9 +175,24 @@ fn format_rust_file(path: &Path) -> Result<(), GenerationError> {
 }
 
 fn generate_lockfile(root: &Path, generated: &mut Vec<PathBuf>) -> Result<(), GenerationError> {
+    generate_lockfile_at(root, "sdk/rust", "sdk/rust/Cargo.lock", generated)?;
+    generate_lockfile_at(
+        root,
+        "sdk/typescript/native",
+        "sdk/typescript/native/Cargo.lock",
+        generated,
+    )
+}
+
+fn generate_lockfile_at(
+    root: &Path,
+    relative_directory: &str,
+    relative_lockfile: &str,
+    generated: &mut Vec<PathBuf>,
+) -> Result<(), GenerationError> {
     let result = Command::new("cargo")
         .arg("generate-lockfile")
-        .current_dir(root.join("sdk/rust"))
+        .current_dir(root.join(relative_directory))
         .output()
         .map_err(|error| GenerationError::Lockfile(error.to_string()))?;
     if !result.status.success() {
@@ -185,7 +200,7 @@ fn generate_lockfile(root: &Path, generated: &mut Vec<PathBuf>) -> Result<(), Ge
             String::from_utf8_lossy(&result.stderr).trim().to_string(),
         ));
     }
-    generated.push(PathBuf::from("sdk/rust/Cargo.lock"));
+    generated.push(PathBuf::from(relative_lockfile));
     Ok(())
 }
 
@@ -195,12 +210,7 @@ fn write_metadata(
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
     write_file(root, ".godsdk/config.yaml", &render_config(spec), generated)?;
-    write_file(
-        root,
-        "godlint.yaml",
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../godlint.yaml")),
-        generated,
-    )?;
+    write_file(root, "godlint.yaml", &render_generated_godlint(), generated)?;
     write_file(
         root,
         "godharness.yaml",
@@ -214,7 +224,14 @@ fn write_metadata(
     write_file(
         root,
         "NEEDS-YOUR-ATTENTION.md",
-        "# Needs your attention\n\n- [ ] Configure the external crates.io publisher for this package.\n",
+        "# Needs your attention\n\nThe generator completed all repository-local setup. Manual actions remain only at external services:\n\n- [ ] Reserve the generated crates.io package name and configure its GitHub trusted publisher.\n- [ ] Reserve the generated npm root and platform package names and configure npm trusted publishing for the release workflow.\n- [ ] If enabling Homebrew, grant the release environment write access to the selected tap repository.\n",
         generated,
+    )
+}
+
+fn render_generated_godlint() -> String {
+    format!(
+        "{}\nexclude:\n  - sdk/typescript/native/index.js\n  - sdk/typescript/native/index.d.ts\n  - sdk/typescript/native/*.node\n  - sdk/typescript/native/target/**\n  - sdk/typescript/node_modules/**\n",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../godlint.yaml"))
     )
 }

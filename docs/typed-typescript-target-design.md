@@ -1,6 +1,6 @@
 # Typed Rust and TypeScript Target Design
 
-**Status:** Proposed  
+**Status:** In progress — typed Rust models, Zod facade, and local napi-rs execution are implemented; cross-platform artifact publication remains.
 **Date:** 2026-08-09
 
 ## Goal
@@ -227,4 +227,3 @@ This target does not yet implement:
 6. Add Node/TypeScript build and native E2E CI jobs.
 7. Run full Rust, TypeScript, Godlint, and Godharness verification, then update PR #25 or
    create a dependent PR if the branch boundary is too large.
-

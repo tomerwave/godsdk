@@ -16,17 +16,14 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Generate an SDK from an API specification.
     Generate(GenerateArgs),
 }
 
 #[derive(Debug, Args)]
 struct GenerateArgs {
-    /// Path to the API specification.
     #[arg(short = 's', long)]
     source: PathBuf,
 
-    /// Directory where the generated SDK will be written.
     #[arg(short = 'o', long)]
     output: PathBuf,
 }

@@ -35,3 +35,9 @@ touch either path. This is intentional until the generation contract is designed
 `godlint.yaml` and `godharness.yaml` keep this repository aligned with the Godsuite’s source
 policy and agent-context workflows. Their presence does not make GodSDK’s future generator
 behavior complete.
+
+CI runs Godlint through `tomerwave/godlint@v1` and runs the Rust workspace checks separately.
+The scheduled `Update Godsuite tools` workflow updates both the pinned Godlint action version
+and the installed Godharness release within the policy in `.github/godsuite-versions.yml`.
+Run it manually when you want to widen the policy from `patch` to `minor` or `major`; every
+change is committed by GitHub Actions for review.

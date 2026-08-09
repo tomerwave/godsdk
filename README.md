@@ -79,3 +79,7 @@ Read [local development](docs/local-development.md) before changing the workspac
 GodSDK is released under the [MIT License](LICENSE). See the [security policy](SECURITY.md) for
 private vulnerability reporting and the [Code of Conduct](CODE_OF_CONDUCT.md) for participation
 expectations.
+
+Repository automation also keeps Godlint and Godharness current through a reviewable scheduled
+workflow. The allowed release level is configured in `.github/godsuite-versions.yml` and can be
+overridden manually for patch, minor, or major updates.

@@ -4,8 +4,8 @@ GodSDK is the technical SDK-generation tool in the Godsuite. It is planned as a 
 pipeline that turns OpenAPI or custom API specifications into one strongly typed Rust client
 core and ecosystem-native bindings.
 
-> **Status: pre-alpha scaffold.** The workspace and CLI contract exist. Generation behavior is
-> intentionally not implemented yet.
+> **Status: pre-alpha runtime.** Rust SDK generation and a production-oriented async HTTP client
+> are implemented. Typed schema models and additional language bindings remain in progress.
 
 ## The Godsuite
 
@@ -26,9 +26,19 @@ cargo run -p godsdk-cli -- --help
 cargo run -p godsdk-cli -- generate --source spec.yaml --output ./generated
 ```
 
-The `generate` command currently validates its command-line shape and reports that generation is
-not implemented. It does not read the source, create the output directory, resolve references,
-access the network, or modify the filesystem.
+The `generate` command reads an OpenAPI 3.1 document and creates a standalone Rust SDK repository
+with a Tokio/reqwest client, a local mock-server E2E test, Cargo.lock, Godlint, and Godharness
+configuration.
+
+To try the generated client:
+
+```sh
+temporary="$(mktemp -d)"
+cargo run -p godsdk-cli -- generate \
+  --source fixtures/openapi/minimal-3.1.yaml \
+  --output "$temporary/generated"
+(cd "$temporary/generated" && cargo test --manifest-path sdk/rust/Cargo.toml --locked)
+```
 
 ## Planned architecture
 

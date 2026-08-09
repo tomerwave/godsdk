@@ -27,6 +27,14 @@ fn generates_a_compiling_rust_repository_skeleton() {
             .any(|path| path == "sdk/rust/src/lib.rs")
     );
     assert!(request.output_path().join("sdk/rust/Cargo.toml").is_file());
+    let cargo = std::fs::read_to_string(request.output_path().join("sdk/rust/Cargo.toml"))
+        .unwrap_or_else(|error| panic!("generated cargo manifest is readable: {error}"));
+    assert!(cargo.contains("reqwest"));
+    assert!(cargo.contains("tokio"));
+    let client = std::fs::read_to_string(request.output_path().join("sdk/rust/src/lib.rs"))
+        .unwrap_or_else(|error| panic!("generated client is readable: {error}"));
+    assert!(client.contains("pub struct ClientBuilder"));
+    assert!(client.contains("pub async fn"));
     assert!(
         request
             .output_path()

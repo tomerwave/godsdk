@@ -27,8 +27,16 @@ cargo run -p godsdk-cli -- --help
 cargo run -p godsdk-cli -- generate --source spec.yaml --output ./generated
 ```
 
-The current command exits non-zero with `SDK generation is not implemented yet` and does not
-touch either path. This is intentional until the generation contract is designed.
+The command creates a fresh generated repository. The generated Rust client is async-first and
+its local mock-server integration test runs without internet access:
+
+```sh
+temporary="$(mktemp -d)"
+cargo run -p godsdk-cli -- generate \
+  --source fixtures/openapi/minimal-3.1.yaml \
+  --output "$temporary/generated"
+(cd "$temporary/generated" && cargo test --manifest-path sdk/rust/Cargo.toml --locked)
+```
 
 ## Repository tools
 

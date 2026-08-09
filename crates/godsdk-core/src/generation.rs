@@ -1,19 +1,30 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use super::{
     ApiSpec, GenerationError, GenerationRequest, GenerationResult, IngestionError, render_config,
-    render_manifest, render_readme, render_rust_cargo, render_rust_client, render_rust_lock,
-    render_rust_mock_test, write_file,
+    render_manifest, render_readme, render_rust_cargo, render_rust_client, render_rust_mock_test,
+    write_file,
 };
 
 pub fn generate(request: &GenerationRequest) -> Result<GenerationResult, GenerationError> {
     let (source, spec) = load_spec(request)?;
     prepare_output(request)?;
-    let mut generated = Vec::new();
-    write_generated_content(request.output_path(), &source, &spec, &mut generated)?;
-    write_manifest(request.output_path(), &source, &mut generated)?;
+    let generated = generate_repository(request.output_path(), &source, &spec)?;
     Ok(GenerationResult { files: generated })
+}
+
+fn generate_repository(
+    root: &Path,
+    source: &str,
+    spec: &ApiSpec,
+) -> Result<Vec<PathBuf>, GenerationError> {
+    let mut generated = Vec::new();
+    write_generated_content(root, source, spec, &mut generated)?;
+    generate_lockfile(root, &mut generated)?;
+    write_manifest(root, source, &mut generated)?;
+    Ok(generated)
 }
 
 fn load_spec(request: &GenerationRequest) -> Result<(String, ApiSpec), GenerationError> {
@@ -69,17 +80,27 @@ fn write_source_and_rust(
     spec: &ApiSpec,
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
-    write_file(root, "api/openapi.yaml", source, generated)?;
+    write_source_file(root, source, generated)?;
+    write_rust_files(root, spec, generated)
+}
+
+fn write_source_file(
+    root: &Path,
+    source: &str,
+    generated: &mut Vec<PathBuf>,
+) -> Result<(), GenerationError> {
+    write_file(root, "api/openapi.yaml", source, generated)
+}
+
+fn write_rust_files(
+    root: &Path,
+    spec: &ApiSpec,
+    generated: &mut Vec<PathBuf>,
+) -> Result<(), GenerationError> {
     write_file(
         root,
         "sdk/rust/Cargo.toml",
         &render_rust_cargo(spec),
-        generated,
-    )?;
-    write_file(
-        root,
-        "sdk/rust/Cargo.lock",
-        &render_rust_lock(spec),
         generated,
     )?;
     write_file(
@@ -93,7 +114,39 @@ fn write_source_and_rust(
         "sdk/rust/tests/mock_server.rs",
         &render_rust_mock_test(spec),
         generated,
-    )
+    )?;
+    format_rust_file(&root.join("sdk/rust/src/lib.rs"))?;
+    format_rust_file(&root.join("sdk/rust/tests/mock_server.rs"))
+}
+
+fn format_rust_file(path: &Path) -> Result<(), GenerationError> {
+    let result = Command::new("rustfmt")
+        .args(["--edition", "2024"])
+        .arg(path)
+        .output()
+        .map_err(|error| GenerationError::Format(error.to_string()))?;
+    if result.status.success() {
+        Ok(())
+    } else {
+        Err(GenerationError::Format(
+            String::from_utf8_lossy(&result.stderr).trim().to_string(),
+        ))
+    }
+}
+
+fn generate_lockfile(root: &Path, generated: &mut Vec<PathBuf>) -> Result<(), GenerationError> {
+    let result = Command::new("cargo")
+        .arg("generate-lockfile")
+        .current_dir(root.join("sdk/rust"))
+        .output()
+        .map_err(|error| GenerationError::Lockfile(error.to_string()))?;
+    if !result.status.success() {
+        return Err(GenerationError::Lockfile(
+            String::from_utf8_lossy(&result.stderr).trim().to_string(),
+        ));
+    }
+    generated.push(PathBuf::from("sdk/rust/Cargo.lock"));
+    Ok(())
 }
 
 fn write_metadata(

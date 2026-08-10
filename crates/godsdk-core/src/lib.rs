@@ -14,6 +14,7 @@ mod ir;
 pub(crate) mod rust_ast;
 mod schema;
 mod typescript;
+mod workflow;
 pub use generation::generate;
 pub use ir::{
     ApiIr, HttpMethod, OAuth2Flow, Operation, Parameter, ParameterLocation, RequestBody,

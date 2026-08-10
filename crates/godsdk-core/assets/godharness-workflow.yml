@@ -1,0 +1,26 @@
+name: Godharness
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  godharness:
+    name: Check agent context configuration
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Godharness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/install_godharness.sh
+
+      - name: Validate repository context
+        run: godharness check

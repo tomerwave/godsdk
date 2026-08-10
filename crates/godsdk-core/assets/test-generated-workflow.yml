@@ -1,0 +1,63 @@
+name: Test generated SDK
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # GODSDK_TARGET: rust:start
+  rust:
+    name: Test Rust SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install 1.97.1 --profile minimal
+      - name: Check Rust SDK
+        working-directory: sdk/rust
+        run: |
+          cargo +1.97.1 fmt --all -- --check
+          cargo +1.97.1 clippy --all-targets --all-features --locked -- -D warnings
+          cargo +1.97.1 test --all-features --locked
+          cargo +1.97.1 build --all-features --locked
+  # GODSDK_TARGET: rust:end
+
+  # GODSDK_TARGET: python:start
+  python:
+    name: Test Python SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build and test Python SDK
+        working-directory: sdk/python
+        run: |
+          python -m pip install --upgrade maturin pydantic pytest
+          maturin build --manifest-path native/Cargo.toml --release --out dist
+          python -m pip install dist/*.whl
+          python -m pytest tests
+  # GODSDK_TARGET: python:end
+
+  # GODSDK_TARGET: typescript:start
+  typescript:
+    name: Test TypeScript SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build and test TypeScript SDK
+        working-directory: sdk/typescript
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+          npm run test:native
+  # GODSDK_TARGET: typescript:end

@@ -98,6 +98,34 @@ fn generated_typed_fixture_contains_rust_models_and_typed_response() {
 }
 
 #[test]
+fn generated_security_operations_select_declared_authentication() {
+    let (_output, request) = generated_fixture("security-3.1.yaml");
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+
+    let auth = std::fs::read_to_string(request.output_path().join("sdk/rust/src/client/auth.rs"))
+        .unwrap_or_else(|error| panic!("generated auth module is readable: {error}"));
+    let operations =
+        std::fs::read_to_string(request.output_path().join("sdk/rust/src/operations/mod.rs"))
+            .unwrap_or_else(|error| panic!("generated operations are readable: {error}"));
+
+    assert!(auth.contains("pub(crate) enum AuthRequirement"));
+    assert!(auth.contains("MissingAuthentication"));
+    assert!(
+        operations.contains("AuthRequirement::Bearer")
+            && operations.contains("scheme: \"bearerAuth\"")
+    );
+    assert!(operations.contains("AuthRequirement::ApiKeyHeader"));
+    assert!(
+        operations.contains("scheme: \"apiKeyAuth\"") && operations.contains("name: \"X-API-Key\"")
+    );
+    assert!(
+        operations.contains("AuthRequirement::Basic")
+            && operations.contains("scheme: \"basicAuth\"")
+    );
+    assert!(operations.contains("scheme: \"oauth2\""));
+}
+
+#[test]
 fn generated_typescript_uses_zod_and_typed_facade() {
     let (_output, request) = generated_fixture("minimal-3.1.yaml");
     generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));

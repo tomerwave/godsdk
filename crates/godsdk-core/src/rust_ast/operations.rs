@@ -1,16 +1,24 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use crate::{ApiIr, HttpMethod, Operation, ParameterLocation, Schema};
+use crate::{ApiIr, HttpMethod, Operation, ParameterLocation, Schema, SecuritySchemeKind};
 
 use super::{literal, rust_identifier, rust_type_name};
 
 pub(super) fn render(spec: &ApiIr) -> TokenStream {
-    let methods = spec.operations.iter().map(render_operation);
+    let methods = spec
+        .operations
+        .iter()
+        .map(|operation| render_operation(operation, spec));
+    let auth_import = if has_security(spec) {
+        quote! { AuthRequirement, }
+    } else {
+        quote! {}
+    };
     quote! {
         use reqwest::Method;
 
-        use crate::client::{Client, SdkError};
+        use crate::client::{#auth_import Client, SdkError};
         use crate::models::*;
 
         impl Client {
@@ -19,19 +27,99 @@ pub(super) fn render(spec: &ApiIr) -> TokenStream {
     }
 }
 
-fn render_operation(operation: &Operation) -> TokenStream {
+fn has_security(spec: &ApiIr) -> bool {
+    spec.security.is_some()
+        || spec
+            .operations
+            .iter()
+            .any(|operation| operation.security.is_some())
+}
+
+fn render_operation(operation: &Operation, spec: &ApiIr) -> TokenStream {
     let method = format_ident!("{}", rust_identifier(&operation.operation_id));
     let (arguments, path_arguments) = operation_arguments(operation);
     let path = operation_path(operation, &path_arguments);
     let response_type = response_type(operation);
     let http_method = method_tokens(operation.method);
     let decode = response_decode(operation, &response_type);
+    let security = operation_security(operation, spec);
     quote! {
         pub async fn #method(&self, #(#arguments),*) -> Result<#response_type, SdkError> {
             #path
-            let body = self.request(Method::#http_method, &path).await?;
+            let body = self.request(Method::#http_method, &path, #security).await?;
             #decode
         }
+    }
+}
+
+fn operation_security(operation: &Operation, spec: &ApiIr) -> TokenStream {
+    let Some(requirements) = operation.security.as_ref().or(spec.security.as_ref()) else {
+        return quote! { None };
+    };
+    let alternatives = requirements
+        .iter()
+        .map(|requirement| render_security_alternative(requirement, spec));
+    quote! { Some(&[#(#alternatives),*]) }
+}
+
+fn render_security_alternative(
+    requirement: &crate::SecurityRequirement,
+    spec: &ApiIr,
+) -> TokenStream {
+    let schemes = requirement
+        .schemes
+        .iter()
+        .map(|required| render_security_requirement(required, spec));
+    quote! { &[#(#schemes),*][..] }
+}
+
+fn render_security_requirement(
+    required: &crate::RequiredSecurityScheme,
+    spec: &ApiIr,
+) -> TokenStream {
+    let scheme = spec
+        .security_schemes
+        .get(&required.name)
+        .unwrap_or_else(|| panic!("validated security scheme is present"));
+    render_security_kind(&required.name, &scheme.kind)
+}
+
+fn render_security_kind(name: &str, kind: &SecuritySchemeKind) -> TokenStream {
+    let name = literal(name);
+    match kind {
+        SecuritySchemeKind::Http { scheme, .. } if scheme.eq_ignore_ascii_case("bearer") => {
+            quote! { AuthRequirement::Bearer { scheme: #name } }
+        }
+        SecuritySchemeKind::Http { scheme, .. } if scheme.eq_ignore_ascii_case("basic") => {
+            quote! { AuthRequirement::Basic { scheme: #name } }
+        }
+        SecuritySchemeKind::Http { .. } => quote! { AuthRequirement::Http { scheme: #name } },
+        SecuritySchemeKind::ApiKey {
+            name: key_name,
+            location: ParameterLocation::Header,
+        } => {
+            let key_name = literal(key_name);
+            quote! { AuthRequirement::ApiKeyHeader { scheme: #name, name: #key_name } }
+        }
+        SecuritySchemeKind::ApiKey {
+            name: key_name,
+            location: ParameterLocation::Query,
+        } => {
+            let key_name = literal(key_name);
+            quote! { AuthRequirement::ApiKeyQuery { scheme: #name, name: #key_name } }
+        }
+        SecuritySchemeKind::ApiKey {
+            name: key_name,
+            location: ParameterLocation::Cookie,
+        } => {
+            let key_name = literal(key_name);
+            quote! { AuthRequirement::ApiKeyCookie { scheme: #name, name: #key_name } }
+        }
+        SecuritySchemeKind::ApiKey {
+            location: ParameterLocation::Path,
+            ..
+        } => panic!("validated API key cannot use a path location"),
+        SecuritySchemeKind::OAuth2 { .. } => quote! { AuthRequirement::Bearer { scheme: #name } },
     }
 }
 

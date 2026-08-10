@@ -11,7 +11,7 @@ pub(super) fn render() -> TokenStream {
     ];
     quote! {
         use std::time::Duration;
-        use super::{Auth, RetryPolicy, SdkError};
+        use super::{Auth, AuthEntry, RetryPolicy, SdkError};
         #(#sections)*
     }
 }
@@ -66,7 +66,7 @@ fn client_impl() -> TokenStream {
             pub fn builder(base_url: impl AsRef<str>) -> ClientBuilder {
                 ClientBuilder {
                     base_url: url::Url::parse(base_url.as_ref()).ok(),
-                    auth: Auth::None,
+            auth: Auth::default(),
                     timeout: Duration::from_secs(30),
                     connect_timeout: Some(Duration::from_secs(10)),
                     max_error_body_bytes: 64 * 1024,
@@ -89,22 +89,52 @@ fn builder_impl() -> TokenStream {
 fn auth_methods() -> TokenStream {
     quote! {
             pub fn bearer_token(mut self, token: impl Into<String>) -> Self {
-                self.auth = Auth::Bearer(token.into());
+                self.auth.add(AuthEntry::Bearer { scheme: None, token: token.into() });
                 self
             }
 
             pub fn api_key_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-                self.auth = Auth::Header(name.into(), value.into());
+                self.auth.add(AuthEntry::ApiKeyHeader { scheme: None, name: name.into(), value: value.into() });
                 self
             }
 
             pub fn api_key_query(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-                self.auth = Auth::Query(name.into(), value.into());
+                self.auth.add(AuthEntry::ApiKeyQuery { scheme: None, name: name.into(), value: value.into() });
                 self
             }
 
             pub fn basic_auth(mut self, username: impl Into<String>, password: Option<String>) -> Self {
-                self.auth = Auth::Basic(username.into(), password);
+                self.auth.add(AuthEntry::Basic { scheme: None, username: username.into(), password });
+                self
+            }
+
+            pub fn bearer_token_for(mut self, scheme: impl Into<String>, token: impl Into<String>) -> Self {
+                self.auth.add(AuthEntry::Bearer { scheme: Some(scheme.into()), token: token.into() });
+                self
+            }
+
+            pub fn http_auth_for(mut self, scheme: impl Into<String>, value: impl Into<String>) -> Self {
+                self.auth.add(AuthEntry::Http { scheme: scheme.into(), value: value.into() });
+                self
+            }
+
+            pub fn api_key_header_for(mut self, scheme: impl Into<String>, name: impl Into<String>, value: impl Into<String>) -> Self {
+                self.auth.add(AuthEntry::ApiKeyHeader { scheme: Some(scheme.into()), name: name.into(), value: value.into() });
+                self
+            }
+
+            pub fn api_key_query_for(mut self, scheme: impl Into<String>, name: impl Into<String>, value: impl Into<String>) -> Self {
+                self.auth.add(AuthEntry::ApiKeyQuery { scheme: Some(scheme.into()), name: name.into(), value: value.into() });
+                self
+            }
+
+            pub fn api_key_cookie_for(mut self, scheme: impl Into<String>, name: impl Into<String>, value: impl Into<String>) -> Self {
+                self.auth.add(AuthEntry::ApiKeyCookie { scheme: Some(scheme.into()), name: name.into(), value: value.into() });
+                self
+            }
+
+            pub fn basic_auth_for(mut self, scheme: impl Into<String>, username: impl Into<String>, password: Option<String>) -> Self {
+                self.auth.add(AuthEntry::Basic { scheme: Some(scheme.into()), username: username.into(), password });
                 self
             }
     }

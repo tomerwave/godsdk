@@ -174,6 +174,39 @@ fn generated_typescript_uses_zod_and_typed_facade() {
 }
 
 #[test]
+fn generated_bindings_expose_typed_api_errors() {
+    let (_output, request) = generated_fixture("parameters-and-errors-3.1.yaml");
+    let request = request.with_targets([Target::Rust, Target::Python, Target::TypeScript]);
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+
+    let typescript_errors =
+        std::fs::read_to_string(request.output_path().join("sdk/typescript/src/errors.ts"))
+            .unwrap_or_else(|error| panic!("generated TypeScript errors are readable: {error}"));
+    let typescript_client =
+        std::fs::read_to_string(request.output_path().join("sdk/typescript/src/index.ts"))
+            .unwrap_or_else(|error| panic!("generated TypeScript client is readable: {error}"));
+    assert!(typescript_errors.contains("class CreateDocumentError"));
+    assert!(typescript_errors.contains("Status400"));
+    assert!(typescript_client.contains("CreateDocumentError.from"));
+
+    let python_errors = std::fs::read_to_string(
+        request
+            .output_path()
+            .join("sdk/python/parameters_and_errors_fixture_api/errors.py"),
+    )
+    .unwrap_or_else(|error| panic!("generated Python errors are readable: {error}"));
+    let python_client = std::fs::read_to_string(
+        request
+            .output_path()
+            .join("sdk/python/parameters_and_errors_fixture_api/client.py"),
+    )
+    .unwrap_or_else(|error| panic!("generated Python client is readable: {error}"));
+    assert!(python_errors.contains("class CreateDocumentError"));
+    assert!(python_errors.contains("class CreateDocumentStatus400Error"));
+    assert!(python_client.contains("CreateDocumentError.from_native"));
+}
+
+#[test]
 fn generated_clients_use_explicit_rust_modules_and_esm_native_loading() {
     let (_output, request) = generated_fixture("minimal-3.1.yaml");
     generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));

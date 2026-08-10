@@ -15,7 +15,7 @@ pub(crate) fn render_typescript_files(spec: &ApiIr) -> Vec<(&'static str, String
         ("sdk/typescript/tsconfig.json", render_tsconfig()),
         ("sdk/typescript/src/schemas.ts", render_schemas(spec)),
         ("sdk/typescript/src/types.ts", render_types(spec)),
-        ("sdk/typescript/src/errors.ts", render_errors()),
+        ("sdk/typescript/src/errors.ts", render_errors(spec)),
         ("sdk/typescript/src/native.ts", render_native_loader(spec)),
         (
             "sdk/typescript/native/index.d.ts",
@@ -56,8 +56,89 @@ fn render_tsconfig() -> String {
     "{\n  \"compilerOptions\": {\n    \"target\": \"ES2022\",\n    \"module\": \"NodeNext\",\n    \"moduleResolution\": \"NodeNext\",\n    \"strict\": true,\n    \"declaration\": true,\n    \"noUncheckedIndexedAccess\": true,\n    \"exactOptionalPropertyTypes\": true,\n    \"noImplicitOverride\": true,\n    \"outDir\": \"dist\"\n  },\n  \"include\": [\"src/**/*.ts\", \"tests/**/*.ts\"]\n}\n".to_string()
 }
 
-fn render_errors() -> String {
-    "export class SdkValidationError extends Error {\n  readonly operation: string;\n  readonly model: string;\n\n  constructor(operation: string, model: string) {\n    super(`Response validation failed for ${operation} (${model})`);\n    this.name = \"SdkValidationError\";\n    this.operation = operation;\n    this.model = model;\n  }\n}\n".to_string()
+fn render_errors(spec: &ApiIr) -> String {
+    let mut imports = spec
+        .schemas
+        .keys()
+        .filter(|name| spec.operations.iter().any(|operation| {
+            operation
+                .responses
+                .iter()
+                .filter(|response| !response.status.starts_with('2'))
+                .any(|response| matches!(response.schema, Some(super::Schema::Reference(ref reference)) if reference == *name))
+        }))
+        .map(|name| format!("import type {{ {name} }} from \"./types.js\";\nimport {{ {name}Schema }} from \"./schemas.js\";\n"))
+        .collect::<String>();
+    imports.push_str("import type { NativeValue } from \"./native.js\";\n");
+    let contracts = spec
+        .operations
+        .iter()
+        .filter(|operation| has_error_responses(operation))
+        .map(render_error_contract)
+        .collect::<String>();
+    format!(
+        "{imports}\nexport type NativeResult = {{ ok: true; value: NativeValue }} | {{ ok: false; status: number; body: NativeValue }};\n\nexport class SdkValidationError extends Error {{\n  readonly operation: string;\n  readonly model: string;\n\n  constructor(operation: string, model: string) {{\n    super(`Response validation failed for ${{operation}} (${{model}})`);\n    this.name = \"SdkValidationError\";\n    this.operation = operation;\n    this.model = model;\n  }}\n}}\n\nexport class SdkHttpError extends Error {{\n  readonly status: number;\n  readonly body: NativeValue;\n\n  constructor(status: number, body: NativeValue) {{\n    super(`API returned HTTP ${{status}}`);\n    this.name = \"SdkHttpError\";\n    this.status = status;\n    this.body = body;\n  }}\n}}\n\n{contracts}"
+    )
+}
+
+fn has_error_responses(operation: &Operation) -> bool {
+    operation
+        .responses
+        .iter()
+        .any(|response| !response.status.starts_with('2'))
+}
+
+fn render_error_contract(operation: &Operation) -> String {
+    let operation_name = type_identifier(&operation.operation_id);
+    let name = format!("{operation_name}Error");
+    let variants = operation
+        .responses
+        .iter()
+        .filter(|response| !response.status.starts_with('2'))
+        .filter_map(|response| {
+            let status = response.status.parse::<u16>().ok()?;
+            let body_type = response
+                .schema
+                .as_ref()
+                .and_then(schema_model_name)
+                .unwrap_or_else(|| "NativeValue".to_string());
+            Some(format!(
+                "export class {operation_name}Status{status}Error extends {name} {{\n  readonly typedBody: {body_type};\n\n  constructor(status: number, body: {body_type}) {{\n    super(status, body);\n    this.typedBody = body;\n  }}\n}}\n"
+            ))
+        })
+        .collect::<String>();
+    let arms = operation
+        .responses
+        .iter()
+        .filter(|response| !response.status.starts_with('2'))
+        .filter_map(|response| {
+            let status = response.status.parse::<u16>().ok()?;
+            let constructor = response
+                .schema
+                .as_ref()
+                .and_then(schema_model_name)
+                .map_or_else(|| format!("new {operation_name}Status{status}Error({status}, result.body)"), |model| {
+                    format!("new {operation_name}Status{status}Error({status}, {model}Schema.parse(result.body))")
+                });
+            Some(format!("      case {status}: return {constructor};\n"))
+        })
+        .collect::<String>();
+    format!(
+        "export class {name} extends SdkHttpError {{\n  static from(result: {{ status: number; body: NativeValue }}): {name} {{\n    switch (result.status) {{\n{arms}      default: return new {name}(result.status, result.body);\n    }}\n  }}\n}}\n\n{variants}"
+    )
+}
+
+fn type_identifier(value: &str) -> String {
+    value
+        .split(['-', '_', ' ', '.'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_ascii_uppercase().to_string() + chars.as_str()
+            })
+        })
+        .collect()
 }
 
 fn render_native_loader(spec: &ApiIr) -> String {
@@ -66,7 +147,7 @@ fn render_native_loader(spec: &ApiIr) -> String {
         .iter()
         .map(|operation| {
             format!(
-                "  {}({}): Promise<NativeValue>;\n",
+                "  {}({}): Promise<NativeResult>;\n",
                 ts_identifier(&operation.operation_id),
                 operation
                     .parameters
@@ -79,7 +160,7 @@ fn render_native_loader(spec: &ApiIr) -> String {
         })
         .collect::<String>();
     format!(
-        "import binding from \"../native/index.js\";\n\nexport type NativeValue = null | boolean | number | string | NativeValue[] | {{ [key: string]: NativeValue }};\n\nexport interface NativeClient {{\n{methods}}}\n\ninterface NativeBinding {{\n  NativeClient: new (baseUrl: string) => NativeClient;\n}}\n\nconst nativeBinding = binding as NativeBinding;\n\nexport function loadNative(baseUrl: string): NativeClient {{\n  return new nativeBinding.NativeClient(baseUrl);\n}}\n"
+        "import binding from \"../native/index.js\";\n\nexport type NativeValue = null | boolean | number | string | NativeValue[] | {{ [key: string]: NativeValue }};\nexport type NativeResult = {{ ok: true; value: NativeValue }} | {{ ok: false; status: number; body: NativeValue }};\n\nexport interface NativeClient {{\n{methods}}}\n\ninterface NativeBinding {{\n  NativeClient: new (baseUrl: string) => NativeClient;\n}}\n\nconst nativeBinding = binding as NativeBinding;\n\nexport function loadNative(baseUrl: string): NativeClient {{\n  return new nativeBinding.NativeClient(baseUrl);\n}}\n"
     )
 }
 
@@ -89,7 +170,7 @@ fn render_native_declaration(spec: &ApiIr) -> String {
         .iter()
         .map(|operation| {
             format!(
-                "  {}({}): Promise<NativeValue>;\n",
+                "  {}({}): Promise<NativeResult>;\n",
                 ts_identifier(&operation.operation_id),
                 operation
                     .parameters
@@ -102,7 +183,7 @@ fn render_native_declaration(spec: &ApiIr) -> String {
         })
         .collect::<String>();
     format!(
-        "export type NativeValue = null | boolean | number | string | NativeValue[] | {{ [key: string]: NativeValue }};\n\nexport declare class NativeClient {{\n{methods}}}\n\ndeclare const binding: {{ NativeClient: typeof NativeClient }};\nexport default binding;\n"
+        "export type NativeValue = null | boolean | number | string | NativeValue[] | {{ [key: string]: NativeValue }};\nexport type NativeResult = {{ ok: true; value: NativeValue }} | {{ ok: false; status: number; body: NativeValue }};\n\nexport declare class NativeClient {{\n{methods}}}\n\ndeclare const binding: {{ NativeClient: typeof NativeClient }};\nexport default binding;\n"
     )
 }
 
@@ -131,6 +212,17 @@ fn render_index_header(spec: &ApiIr) -> String {
             "import {{ {name}Schema }} from \"./schemas.js\";\n"
         ));
     }
+    for operation in spec
+        .operations
+        .iter()
+        .filter(|operation| has_error_responses(operation))
+    {
+        imports.push_str(&format!(
+            "import {{ {}Error }} from \"./errors.js\";\n",
+            type_identifier(&operation.operation_id)
+        ));
+    }
+    imports.push_str("import { SdkHttpError } from \"./errors.js\";\n");
     let mut type_names = spec.schemas.keys().cloned().collect::<Vec<_>>();
     type_names.extend(response_names);
     let types = type_names.join(", ");
@@ -159,37 +251,36 @@ fn render_operation(operation: &Operation, _spec: &ApiIr) -> String {
         .iter()
         .find(|response| response.status.starts_with('2'))
         .and_then(|response| response.schema.as_ref());
-    let Some(response) = response else {
-        return render_void_operation(operation, &parameters);
-    };
-    let model = schema_model_name(response).unwrap_or_else(|| operation_response_name(operation));
-    let parser = format!("{model}Schema");
+    let method = ts_identifier(&operation.operation_id);
+    let arguments = operation
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.location == super::ParameterLocation::Path)
+        .map(|parameter| ts_identifier(&parameter.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let error = has_error_responses(operation)
+        .then(|| format!("{}Error", type_identifier(&operation.operation_id)));
+    let error_handling = error.as_ref().map_or_else(
+        || "      throw new SdkHttpError(result.status, result.body);\n".to_string(),
+        |error| format!("      throw {}.from(result);\n", error),
+    );
+    let success = response.map_or_else(
+        || "    return;\n".to_string(),
+        |response| {
+            let model =
+                schema_model_name(response).unwrap_or_else(|| operation_response_name(operation));
+            let parser = format!("{model}Schema");
+            format!("    return {parser}.parse(result.value);\n")
+        },
+    );
+    let return_type = response
+        .map(|response| {
+            schema_model_name(response).unwrap_or_else(|| operation_response_name(operation))
+        })
+        .unwrap_or_else(|| "void".to_string());
     format!(
-        "  async {}({parameters}): Promise<{model}> {{\n    const value = await this.native.{}({});\n    return {parser}.parse(value);\n  }}\n\n",
-        ts_identifier(&operation.operation_id),
-        ts_identifier(&operation.operation_id),
-        operation
-            .parameters
-            .iter()
-            .filter(|parameter| parameter.location == super::ParameterLocation::Path)
-            .map(|parameter| ts_identifier(&parameter.name))
-            .collect::<Vec<_>>()
-            .join(", "),
-    )
-}
-
-fn render_void_operation(operation: &Operation, parameters: &str) -> String {
-    format!(
-        "  async {}({parameters}): Promise<void> {{\n    await this.native.{}({});\n  }}\n\n",
-        ts_identifier(&operation.operation_id),
-        ts_identifier(&operation.operation_id),
-        operation
-            .parameters
-            .iter()
-            .filter(|parameter| parameter.location == super::ParameterLocation::Path)
-            .map(|parameter| ts_identifier(&parameter.name))
-            .collect::<Vec<_>>()
-            .join(", "),
+        "  async {method}({parameters}): Promise<{return_type}> {{\n    const result = await this.native.{method}({arguments});\n    if (!result.ok) {{\n{error_handling}    }}\n{success}  }}\n\n"
     )
 }
 
@@ -260,8 +351,19 @@ fn render_native_rust(spec: &ApiIr) -> String {
         .iter()
         .map(render_native_operation)
         .collect::<String>();
+    let error_imports = spec
+        .operations
+        .iter()
+        .filter(|operation| has_error_responses(operation))
+        .map(|operation| format!("{}Error", type_identifier(&operation.operation_id)))
+        .collect::<Vec<_>>();
+    let error_imports = if error_imports.is_empty() {
+        String::new()
+    } else {
+        format!(", {}", error_imports.join(", "))
+    };
     format!(
-        "use napi::bindgen_prelude::*;\nuse napi_derive::napi;\nuse {}::Client as RustClient;\n\n#[napi]\npub struct NativeClient {{\n    inner: RustClient,\n}}\n\n#[napi]\nimpl NativeClient {{\n    #[napi(constructor)]\n    pub fn new(base_url: String) -> Result<Self> {{\n        let inner = RustClient::builder(base_url).build().map_err(to_napi_error)?;\n        Ok(Self {{ inner }})\n    }}\n\n{methods}}}\n\nfn to_napi_error(error: impl std::fmt::Display) -> Error {{\n    Error::from_reason(error.to_string())\n}}\n",
+        "use napi::bindgen_prelude::*;\nuse napi_derive::napi;\nuse {}::{{Client as RustClient, SdkError{error_imports}}};\n\n#[napi]\npub struct NativeClient {{\n    inner: RustClient,\n}}\n\n#[napi]\nimpl NativeClient {{\n    #[napi(constructor)]\n    pub fn new(base_url: String) -> Result<Self> {{\n        let inner = RustClient::builder(base_url).build().map_err(to_napi_error)?;\n        Ok(Self {{ inner }})\n    }}\n\n{methods}}}\n\nfn to_napi_error(error: impl std::fmt::Display) -> Error {{\n    Error::from_reason(error.to_string())\n}}\n",
         rust_crate_name(spec),
     )
 }
@@ -281,8 +383,34 @@ fn render_native_operation(operation: &Operation) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let method = super::rust_identifier(&operation.operation_id);
+    let body = if has_error_responses(operation) {
+        let error_type = format!("{}Error", type_identifier(&operation.operation_id));
+        let arms = operation
+            .responses
+            .iter()
+            .filter(|response| !response.status.starts_with('2'))
+            .filter_map(|response| {
+                let status = response.status.parse::<u16>().ok()?;
+                let variant = format!("Status{status}");
+                let (pattern, body) = response.schema.as_ref().map_or_else(
+                    || (format!("{error_type}::{variant}"), "serde_json::Value::Null".to_string()),
+                    |_| (format!("{error_type}::{variant}(value)"), "value".to_string()),
+                );
+                Some(format!(
+                    "            Err({pattern}) => Ok(serde_json::json!({{\"ok\": false, \"status\": {status}, \"body\": {body}}})),\n"
+                ))
+            })
+            .collect::<String>();
+        format!(
+            "        match self.inner.{method}({arguments}).await {{\n            Ok(value) => Ok(serde_json::json!({{\"ok\": true, \"value\": value}})),\n            Err({error_type}::Unexpected {{ status, body }}) => Ok(serde_json::json!({{\"ok\": false, \"status\": status, \"body\": body}})),\n            Err({error_type}::Transport(error)) => Err(to_napi_error(error)),\n{arms}        }}"
+        )
+    } else {
+        format!(
+            "        match self.inner.{method}({arguments}).await {{\n            Ok(value) => Ok(serde_json::json!({{\"ok\": true, \"value\": value}})),\n            Err(SdkError::Http {{ status, body }}) => Ok(serde_json::json!({{\"ok\": false, \"status\": status, \"body\": body}})),\n            Err(error) => Err(to_napi_error(error)),\n        }}"
+        )
+    };
     format!(
-        "    #[napi]\n    pub async fn {method}(&self{parameters}) -> Result<serde_json::Value> {{\n        let value = self.inner.{method}({arguments}).await.map_err(to_napi_error)?;\n        serde_json::to_value(value).map_err(to_napi_error)\n    }}\n\n",
+        "    #[napi]\n    pub async fn {method}(&self{parameters}) -> Result<serde_json::Value> {{\n{body}\n    }}\n\n",
     )
 }
 

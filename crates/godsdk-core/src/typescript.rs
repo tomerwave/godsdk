@@ -470,8 +470,17 @@ fn render_native_rust(spec: &ApiIr) -> String {
     } else {
         format!(", {}", error_imports.join(", "))
     };
+    let sdk_error_import = if spec
+        .operations
+        .iter()
+        .any(|operation| !has_error_responses(operation))
+    {
+        ", SdkError"
+    } else {
+        ""
+    };
     format!(
-        "use napi::bindgen_prelude::*;\nuse napi_derive::napi;\nuse {}::{{Client as RustClient, SdkError{error_imports}}};\n\n#[napi]\npub struct NativeClient {{\n    inner: RustClient,\n}}\n\n#[napi]\nimpl NativeClient {{\n    #[napi(constructor)]\n    pub fn new(base_url: String) -> Result<Self> {{\n        let inner = RustClient::builder(base_url).build().map_err(to_napi_error)?;\n        Ok(Self {{ inner }})\n    }}\n\n{methods}}}\n\nfn to_napi_error(error: impl std::fmt::Display) -> Error {{\n    Error::from_reason(error.to_string())\n}}\n",
+        "use napi::bindgen_prelude::*;\nuse napi_derive::napi;\nuse {}::{{Client as RustClient{sdk_error_import}{error_imports}}};\n\n#[napi]\npub struct NativeClient {{\n    inner: RustClient,\n}}\n\n#[napi]\nimpl NativeClient {{\n    #[napi(constructor)]\n    pub fn new(base_url: String) -> Result<Self> {{\n        let inner = RustClient::builder(base_url).build().map_err(to_napi_error)?;\n        Ok(Self {{ inner }})\n    }}\n\n{methods}}}\n\nfn to_napi_error(error: impl std::fmt::Display) -> Error {{\n    Error::from_reason(error.to_string())\n}}\n",
         rust_crate_name(spec),
     )
 }

@@ -16,6 +16,9 @@ use crate::ir::{
     SecurityScheme,
 };
 use crate::schema::schema_from_value;
+
+#[path = "ingestion/parameter_serialization.rs"]
+mod parameter_serialization;
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum IngestionError {
     #[error("could not read OpenAPI document {path}: {message}")]
@@ -44,6 +47,12 @@ pub enum IngestionError {
     UnknownSecurityScheme { name: String },
     #[error("security requirement for {scheme} references unknown scope {scope}")]
     UnknownSecurityScope { scheme: String, scope: String },
+    #[error("unsupported parameter serialization style {style} for {location} parameter at {path}")]
+    UnsupportedParameterStyle {
+        style: String,
+        location: String,
+        path: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,6 +117,10 @@ enum RawParameter {
         location: String,
         #[serde(default)]
         required: bool,
+        #[serde(default)]
+        style: Option<String>,
+        #[serde(default)]
+        explode: Option<bool>,
         #[serde(default)]
         schema: Option<serde_json::Value>,
     },
@@ -417,46 +430,49 @@ fn normalize_parameters(
 ) -> Result<Vec<Parameter>, IngestionError> {
     let mut parameters = Vec::new();
     for parameter in path_parameters.iter().chain(operation_parameters) {
-        match parameter {
-            RawParameter::Inline {
-                name,
-                location,
-                required,
-                schema,
-            } => parameters.push(Parameter {
-                name: name.clone(),
-                location: parse_parameter_location(location, path)?,
-                required: *required,
-                schema: schema
-                    .as_ref()
-                    .map(|value| schema_from_value(value, &format!("{path}.parameter.{name}")))
-                    .transpose()?
-                    .unwrap_or(Schema::String { format: None }),
-            }),
-            RawParameter::Reference { reference } => {
-                references.insert(reference.clone());
-            }
+        if let Some(parameter) = normalize_parameter(parameter, path, references)? {
+            parameters.push(parameter);
         }
     }
-    parameters.sort_by_key(|parameter| parameter_order(path, parameter));
+    parameters.sort_by_key(|parameter| parameter_serialization::order(path, parameter));
     Ok(parameters)
 }
 
-fn parameter_order(path: &str, parameter: &Parameter) -> (u8, usize, String) {
-    if parameter.location == ParameterLocation::Path {
-        let position = path_parameters(path)
-            .iter()
-            .position(|name| name == &parameter.name)
-            .unwrap_or(usize::MAX);
-        return (0, position, parameter.name.clone());
+fn normalize_parameter(
+    parameter: &RawParameter,
+    path: &str,
+    references: &mut BTreeSet<String>,
+) -> Result<Option<Parameter>, IngestionError> {
+    match parameter {
+        RawParameter::Inline {
+            name,
+            location,
+            required,
+            style,
+            explode,
+            schema,
+        } => {
+            let location_kind = parameter_serialization::parse_location(location, path)?;
+            let serialization =
+                parameter_serialization::normalize(style.as_deref(), *explode, location, path)?;
+            let schema = schema
+                .as_ref()
+                .map(|value| schema_from_value(value, &format!("{path}.parameter.{name}")))
+                .transpose()?
+                .unwrap_or(Schema::String { format: None });
+            Ok(Some(Parameter {
+                name: name.clone(),
+                location: location_kind,
+                required: *required,
+                serialization,
+                schema,
+            }))
+        }
+        RawParameter::Reference { reference } => {
+            references.insert(reference.clone());
+            Ok(None)
+        }
     }
-    let location = match parameter.location {
-        ParameterLocation::Query => 1,
-        ParameterLocation::Header => 2,
-        ParameterLocation::Cookie => 3,
-        ParameterLocation::Path => unreachable!("path parameters return above"),
-    };
-    (location, 0, parameter.name.clone())
 }
 
 fn validate_path_parameters(
@@ -464,7 +480,7 @@ fn validate_path_parameters(
     parameters: &[Parameter],
     references: &BTreeSet<String>,
 ) -> Result<(), IngestionError> {
-    for parameter_name in path_parameters(path) {
+    for parameter_name in parameter_serialization::path_parameters(path) {
         let declared = parameters.iter().any(|parameter| {
             parameter.name == parameter_name
                 && parameter.location == ParameterLocation::Path
@@ -481,27 +497,4 @@ fn validate_path_parameters(
         }
     }
     Ok(())
-}
-
-fn parse_parameter_location(
-    location: &str,
-    path: &str,
-) -> Result<ParameterLocation, IngestionError> {
-    match location {
-        "query" => Ok(ParameterLocation::Query),
-        "header" => Ok(ParameterLocation::Header),
-        "path" => Ok(ParameterLocation::Path),
-        "cookie" => Ok(ParameterLocation::Cookie),
-        _ => Err(IngestionError::Parse(format!(
-            "unsupported parameter location {location} at {path}"
-        ))),
-    }
-}
-
-fn path_parameters(path: &str) -> Vec<String> {
-    path.split('{')
-        .skip(1)
-        .filter_map(|segment| segment.split('}').next())
-        .map(ToOwned::to_owned)
-        .collect()
 }

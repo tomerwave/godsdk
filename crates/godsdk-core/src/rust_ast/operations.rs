@@ -3,7 +3,10 @@ use quote::{format_ident, quote};
 
 use crate::{ApiIr, HttpMethod, Operation, ParameterLocation, Schema, SecuritySchemeKind};
 
-use super::request::{OperationBodyInput, operation_arguments, operation_body};
+use super::request::{
+    OperationBodyArgs, OperationBodyInput, OperationHelpersInput, operation_arguments,
+    operation_body, operation_helpers,
+};
 use super::{literal, rust_identifier, rust_type_name};
 
 pub(super) fn render(spec: &ApiIr) -> TokenStream {
@@ -26,11 +29,17 @@ pub(super) fn render(spec: &ApiIr) -> TokenStream {
         .iter()
         .filter(|operation| has_error_responses(operation))
         .map(render_error_contract);
+    let request_types = spec
+        .operations
+        .iter()
+        .map(|operation| render_request_type(operation, spec));
     quote! {
         use reqwest::Method;
 
         use crate::client::{#auth_import #response_import Client, RequestOptions, SdkError};
         use crate::models::*;
+
+        #(#request_types)*
 
         #(#errors)*
 
@@ -61,29 +70,64 @@ fn has_security(spec: &ApiIr) -> bool {
 
 fn render_operation(operation: &Operation, spec: &ApiIr) -> TokenStream {
     let method = format_ident!("{}", rust_identifier(&operation.operation_id));
-    let (arguments, path_arguments, request_parts) = operation_arguments(operation, spec);
+    let request_type = request_type_name(operation);
+    let (_arguments, path_arguments, request_parts) = operation_arguments(operation, spec);
     let path = operation_path(operation, &path_arguments);
+    let path_helper = format_ident!("{}_path", rust_identifier(&operation.operation_id));
+    let options_helper = format_ident!("{}_options", rust_identifier(&operation.operation_id));
+    let path_fields = operation
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.location == ParameterLocation::Path)
+        .map(|parameter| format_ident!("{}", rust_identifier(&parameter.name)))
+        .collect::<Vec<_>>();
+    let helpers = operation_helpers(
+        operation,
+        OperationHelpersInput {
+            request_type: request_type.clone(),
+            path_helper: path_helper.clone(),
+            options_helper: options_helper.clone(),
+            path,
+            path_fields,
+            body: OperationBodyInput {
+                security: operation_security(operation, spec),
+                request_parts,
+            },
+        },
+    );
     let response_type = response_type(operation);
-    let security = operation_security(operation, spec);
     let error_type = has_error_responses(operation).then(|| error_type_name(operation));
     let return_type = error_type
         .as_ref()
         .map_or_else(|| quote! { SdkError }, |error_type| quote! { #error_type });
-    let body = operation_body(
+    let body = operation_body(OperationBodyArgs {
         operation,
-        &response_type,
-        error_type.as_ref(),
-        OperationBodyInput {
-            security,
-            request_parts,
-        },
-    );
+        response_type: &response_type,
+        error_type: error_type.as_ref(),
+        path_helper: &path_helper,
+        options_helper: &options_helper,
+    });
     quote! {
-        pub async fn #method(&self, #(#arguments),*) -> Result<#response_type, #return_type> {
-            #path
+        #helpers
+        pub async fn #method(&self, request: #request_type) -> Result<#response_type, #return_type> {
             #body
         }
     }
+}
+
+fn render_request_type(operation: &Operation, spec: &ApiIr) -> TokenStream {
+    let request_type = request_type_name(operation);
+    let (fields, _, _) = operation_arguments(operation, spec);
+    quote! {
+        #[derive(Debug, Clone)]
+        pub struct #request_type {
+            #(pub #fields,)*
+        }
+    }
+}
+
+fn request_type_name(operation: &Operation) -> proc_macro2::Ident {
+    format_ident!("{}Request", rust_type_name(&operation.operation_id))
 }
 
 fn error_type_name(operation: &Operation) -> proc_macro2::Ident {

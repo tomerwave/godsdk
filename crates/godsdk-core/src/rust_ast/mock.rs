@@ -11,7 +11,7 @@ pub(crate) fn render(spec: &ApiIr) -> String {
     let operation = &spec.operations[0];
     let package = format_ident!("{}", format!("{}_sdk", slug(&spec.title).replace('-', "_")));
     let method = format_ident!("{}", rust_identifier(&operation.operation_id));
-    let (arguments, request_setup) = mock_inputs(spec, operation, &package);
+    let (request, request_setup) = mock_inputs(spec, operation, &package);
     let success_body = success_body(spec, operation);
     let literals = MockLiterals {
         method_path: LitStr::new(&render_method_path(&operation.path), Span::call_site()),
@@ -22,7 +22,7 @@ pub(crate) fn render(spec: &ApiIr) -> String {
     let context = MockContext {
         package: &package,
         method: &method,
-        arguments: &arguments,
+        request: &request,
         request_setup: &request_setup,
         auth: &auth.builder,
     };
@@ -48,19 +48,47 @@ fn mock_inputs(
     spec: &ApiIr,
     operation: &crate::Operation,
     package: &syn::Ident,
-) -> (Vec<proc_macro2::TokenStream>, proc_macro2::TokenStream) {
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     let mut arguments = operation
         .parameters
         .iter()
         .map(mock_parameter_argument)
         .collect::<Vec<_>>();
     let request_setup = mock_body_input(spec, operation, package, &mut arguments);
-    (arguments, request_setup)
+    let request_type = format_ident!("{}Request", super::rust_type_name(&operation.operation_id));
+    let fields = operation
+        .parameters
+        .iter()
+        .map(|parameter| format_ident!("{}", rust_identifier(&parameter.name)))
+        .chain(
+            operation
+                .request_body_details
+                .as_ref()
+                .filter(|body| body.content_type == "application/json")
+                .map(|_| format_ident!("request_body")),
+        )
+        .zip(arguments)
+        .map(|(field, value)| mock_request_field(field, value));
+    (
+        quote! { #package::#request_type { #(#fields),* } },
+        request_setup,
+    )
+}
+
+fn mock_request_field(
+    field: syn::Ident,
+    value: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    if field == "request_body" && value.to_string() == "request_body" {
+        quote! { #field }
+    } else {
+        quote! { #field: #value }
+    }
 }
 
 fn mock_parameter_argument(parameter: &crate::Parameter) -> proc_macro2::TokenStream {
     match parameter.location {
-        ParameterLocation::Path => quote! { "pet-1" },
+        ParameterLocation::Path => quote! { "pet-1".to_string() },
         _ if parameter.required => sample_parameter(&parameter.schema),
         _ => quote! { None },
     }
@@ -90,7 +118,7 @@ fn mock_body_input(
         &String::from_utf8_lossy(&request_body(spec, operation)),
         Span::call_site(),
     );
-    arguments.push(quote! { &request_body });
+    arguments.push(quote! { request_body });
     quote! {
         let request_body: #body_type = serde_json::from_str(#body_literal)
             .unwrap_or_else(|error| panic!("request body fixture: {error}"));
@@ -111,7 +139,7 @@ struct MockAuth {
 struct MockContext<'a> {
     package: &'a syn::Ident,
     method: &'a syn::Ident,
-    arguments: &'a [proc_macro2::TokenStream],
+    request: &'a proc_macro2::TokenStream,
     request_setup: &'a proc_macro2::TokenStream,
     auth: &'a proc_macro2::TokenStream,
 }
@@ -233,7 +261,7 @@ fn main_test(context: &MockContext<'_>, literals: &MockLiterals) -> proc_macro2:
     let server = main_server(&literals.method_path, &literals.success, context.auth);
     let call = main_call(
         context.method,
-        context.arguments,
+        context.request,
         context.request_setup,
         &literals.success_marker,
     );
@@ -284,13 +312,13 @@ fn main_server(
 
 fn main_call(
     method: &syn::Ident,
-    arguments: &[proc_macro2::TokenStream],
+    request: &proc_macro2::TokenStream,
     request_setup: &proc_macro2::TokenStream,
     marker: &LitStr,
 ) -> proc_macro2::TokenStream {
     quote! {
         #request_setup
-        let response = client.#method(#(#arguments),*)
+        let response = client.#method(#request)
             .await
             .unwrap_or_else(|error| panic!("client request: {error}"));
         assert!(format!("{response:?}").contains(#marker));
@@ -362,7 +390,7 @@ fn retry_server(success: &LitByteStr, assertion: &LitStr) -> proc_macro2::TokenS
 
 fn retry_call(context: &MockContext<'_>, marker: &LitStr) -> proc_macro2::TokenStream {
     let method = context.method;
-    let arguments = context.arguments;
+    let request = context.request;
     let request_setup = context.request_setup;
     let auth = context.auth;
     quote! {
@@ -380,7 +408,7 @@ fn retry_call(context: &MockContext<'_>, marker: &LitStr) -> proc_macro2::TokenS
             .build()
             .unwrap_or_else(|error| panic!("client: {error}"));
         #request_setup
-        let response = client.#method(#(#arguments),*)
+        let response = client.#method(#request)
             .await
             .unwrap_or_else(|error| panic!("retry request: {error}"));
         assert!(format!("{response:?}").contains(#marker));

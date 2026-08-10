@@ -244,8 +244,17 @@ fn native_rust(spec: &ApiIr) -> String {
     } else {
         format!(", {}", error_imports.join(", "))
     };
+    let sdk_error_import = if spec
+        .operations
+        .iter()
+        .any(|operation| !has_error_responses(operation))
+    {
+        ", SdkError"
+    } else {
+        ""
+    };
     format!(
-        "use pyo3::prelude::*;\nuse {}_sdk::{{Client as RustClient, SdkError{error_imports}}};\n\n#[pyclass]\nstruct NativeClient {{\n    inner: RustClient,\n}}\n\n#[pymethods]\nimpl NativeClient {{\n    #[new]\n    fn new(base_url: String) -> PyResult<Self> {{\n        let inner = RustClient::builder(base_url).build().map_err(to_python_error)?;\n        Ok(Self {{ inner }})\n    }}\n{methods}}}\n\nfn encode_success_value(value: serde_json::Value) -> PyResult<String> {{\n    serde_json::to_string(&serde_json::json!({{\"ok\": true, \"value\": value}})).map_err(to_python_error)\n}}\n\nfn encode_http_error(status: u16, body: serde_json::Value) -> PyResult<String> {{\n    serde_json::to_string(&serde_json::json!({{\"ok\": false, \"status\": status, \"body\": body}})).map_err(to_python_error)\n}}\n\n{helpers}#[pymodule]\nfn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {{\n    m.add_class::<NativeClient>()?;\n    Ok(())\n}}\n\nfn to_python_error(error: impl std::fmt::Display) -> PyErr {{\n    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string())\n}}\n",
+        "use pyo3::prelude::*;\nuse {}_sdk::{{Client as RustClient{sdk_error_import}{error_imports}}};\n\n#[pyclass]\nstruct NativeClient {{\n    inner: RustClient,\n}}\n\n#[pymethods]\nimpl NativeClient {{\n    #[new]\n    fn new(base_url: String) -> PyResult<Self> {{\n        let inner = RustClient::builder(base_url).build().map_err(to_python_error)?;\n        Ok(Self {{ inner }})\n    }}\n{methods}}}\n\nfn encode_success_value(value: serde_json::Value) -> PyResult<String> {{\n    serde_json::to_string(&serde_json::json!({{\"ok\": true, \"value\": value}})).map_err(to_python_error)\n}}\n\nfn encode_http_error(status: u16, body: serde_json::Value) -> PyResult<String> {{\n    serde_json::to_string(&serde_json::json!({{\"ok\": false, \"status\": status, \"body\": body}})).map_err(to_python_error)\n}}\n\n{helpers}#[pymodule]\nfn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {{\n    m.add_class::<NativeClient>()?;\n    Ok(())\n}}\n\nfn to_python_error(error: impl std::fmt::Display) -> PyErr {{\n    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string())\n}}\n",
         slug(&spec.title).replace('-', "_"),
     )
 }

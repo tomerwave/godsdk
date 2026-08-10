@@ -13,7 +13,7 @@ fn imports() -> TokenStream {
         use url::Url;
         use super::{
             apply_auth, is_idempotent, parse_retry_after, should_retry_status, sleep_before_retry,
-            Client, SdkError,
+            AuthRequirement, Client, SdkError,
         };
 
         enum AttemptOutcome {
@@ -47,18 +47,20 @@ fn client_request() -> TokenStream {
 fn request_method() -> TokenStream {
     quote! {
         impl Client {
-            pub(crate) async fn request(&self, method: Method, path: &str) -> Result<String, SdkError> {
-                let mut url = self
+            pub(crate) async fn request(
+                &self,
+                method: Method,
+                path: &str,
+                requirements: Option<&[&[AuthRequirement]]>,
+            ) -> Result<String, SdkError> {
+                let url = self
                     .base_url
                     .join(path)
                     .map_err(|error| SdkError::InvalidBaseUrl(error.to_string()))?;
-                if let super::Auth::Query(name, value) = &self.auth {
-                    url.query_pairs_mut().append_pair(name, value);
-                }
                 let can_retry = is_idempotent(&method) || self.retry_policy.retry_non_idempotent;
                 for attempt in 0..=self.retry_policy.max_retries {
                     let may_retry = can_retry && attempt < self.retry_policy.max_retries;
-                    match self.send_once(&method, &url, may_retry).await {
+                    match self.send_once(&method, &url, may_retry, requirements).await {
                         AttemptOutcome::Success(body) => return Ok(body),
                         AttemptOutcome::Retry(retry_after) => {
                             sleep_before_retry(&self.retry_policy, attempt, retry_after).await;
@@ -76,8 +78,21 @@ fn request_method() -> TokenStream {
 fn send_once() -> TokenStream {
     quote! {
         impl Client {
-            async fn send_once(&self, method: &Method, url: &Url, may_retry: bool) -> AttemptOutcome {
-                let request = apply_auth(self.http.request(method.clone(), url.clone()), &self.auth);
+            async fn send_once(
+                &self,
+                method: &Method,
+                url: &Url,
+                may_retry: bool,
+                requirements: Option<&[&[AuthRequirement]]>,
+            ) -> AttemptOutcome {
+                let request = match apply_auth(
+                    self.http.request(method.clone(), url.clone()),
+                    &self.auth,
+                    requirements,
+                ) {
+                    Ok(request) => request,
+                    Err(error) => return AttemptOutcome::Failure(error),
+                };
                 match request.send().await {
                     Ok(response) if response.status().is_success() => {
                         AttemptOutcome::from_body(response, self.max_error_body_bytes).await

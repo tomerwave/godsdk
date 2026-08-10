@@ -13,7 +13,7 @@ pub(super) fn render_mod() -> TokenStream {
         pub use error::SdkError;
         pub use retry::RetryPolicy;
 
-        pub(crate) use auth::{apply_auth, Auth};
+        pub(crate) use auth::{apply_auth, Auth, AuthEntry, AuthRequirement};
         pub(crate) use retry::{
             is_idempotent, parse_retry_after, should_retry_status, sleep_before_retry,
         };
@@ -22,25 +22,182 @@ pub(super) fn render_mod() -> TokenStream {
 }
 
 pub(super) fn render_auth() -> TokenStream {
+    let types = auth_types();
+    let matching = auth_matching();
+    let application = auth_application();
     quote! {
-        #[derive(Clone, Debug)]
-        pub(crate) enum Auth {
-            None,
-            Bearer(String),
-            Header(String, String),
-            Query(String, String),
-            Basic(String, Option<String>),
+        use super::SdkError;
+        #types
+        #matching
+        #application
+    }
+}
+
+fn auth_types() -> TokenStream {
+    quote! {
+        #[derive(Clone, Debug, Default)]
+        pub(crate) struct Auth {
+            entries: Vec<AuthEntry>,
         }
 
+        #[derive(Clone, Debug)]
+        pub(crate) enum AuthEntry {
+            Bearer { scheme: Option<String>, token: String },
+            Http { scheme: String, value: String },
+            ApiKeyHeader { scheme: Option<String>, name: String, value: String },
+            ApiKeyQuery { scheme: Option<String>, name: String, value: String },
+            ApiKeyCookie { scheme: Option<String>, name: String, value: String },
+            Basic { scheme: Option<String>, username: String, password: Option<String> },
+        }
+
+        #[allow(dead_code)]
+        #[derive(Clone, Copy, Debug)]
+        pub(crate) enum AuthRequirement {
+            Bearer { scheme: &'static str },
+            Http { scheme: &'static str },
+            ApiKeyHeader { scheme: &'static str, name: &'static str },
+            ApiKeyQuery { scheme: &'static str, name: &'static str },
+            ApiKeyCookie { scheme: &'static str, name: &'static str },
+            Basic { scheme: &'static str },
+        }
+
+        impl Auth {
+            pub(crate) fn add(&mut self, entry: AuthEntry) {
+                self.entries.push(entry);
+            }
+        }
+    }
+}
+
+fn auth_matching() -> TokenStream {
+    quote! {
+        impl Auth {
+            fn entry_for(&self, requirement: &AuthRequirement) -> Option<&AuthEntry> {
+                self.entries
+                    .iter()
+                    .find(|entry| matches_requirement(entry, requirement))
+            }
+        }
+
+        fn matches_requirement(entry: &AuthEntry, requirement: &AuthRequirement) -> bool {
+            match (entry, requirement) {
+                (AuthEntry::Bearer { scheme, .. }, AuthRequirement::Bearer { scheme: required }) =>
+                    scheme_matches(scheme, required),
+                (AuthEntry::Http { scheme, .. }, AuthRequirement::Http { scheme: required }) =>
+                    scheme == required,
+                (
+                    AuthEntry::ApiKeyHeader { scheme, name, .. },
+                    AuthRequirement::ApiKeyHeader { scheme: required, name: required_name },
+                ) => scheme_matches(scheme, required) && name == required_name,
+                (
+                    AuthEntry::ApiKeyQuery { scheme, name, .. },
+                    AuthRequirement::ApiKeyQuery { scheme: required, name: required_name },
+                ) => scheme_matches(scheme, required) && name == required_name,
+                (
+                    AuthEntry::ApiKeyCookie { scheme, name, .. },
+                    AuthRequirement::ApiKeyCookie { scheme: required, name: required_name },
+                ) => scheme_matches(scheme, required) && name == required_name,
+                (AuthEntry::Basic { scheme, .. }, AuthRequirement::Basic { scheme: required }) =>
+                    scheme_matches(scheme, required),
+                _ => false,
+            }
+        }
+
+        fn scheme_matches(configured: &Option<String>, required: &str) -> bool {
+            configured.as_deref().is_none_or(|scheme| scheme == required)
+        }
+    }
+}
+
+fn auth_application() -> TokenStream {
+    let apply = auth_apply_function();
+    let helpers = auth_apply_helpers();
+    quote! {
+        #apply
+        #helpers
+    }
+}
+
+fn auth_apply_function() -> TokenStream {
+    quote! {
         pub(crate) fn apply_auth(
             request: reqwest::RequestBuilder,
             auth: &Auth,
+            requirements: Option<&[&[AuthRequirement]]>,
+        ) -> Result<reqwest::RequestBuilder, SdkError> {
+            match requirements {
+                None => Ok(apply_all(request, auth)),
+                Some([]) => Ok(request),
+                Some(alternatives) => apply_selected(request, auth, alternatives),
+            }
+        }
+    }
+}
+
+fn auth_apply_helpers() -> TokenStream {
+    let selection = auth_selection_helpers();
+    let entry = auth_entry_helper();
+    quote! {
+        #selection
+        #entry
+    }
+}
+
+fn auth_selection_helpers() -> TokenStream {
+    quote! {
+        fn apply_all(
+            request: reqwest::RequestBuilder,
+            auth: &Auth,
         ) -> reqwest::RequestBuilder {
-            match auth {
-                Auth::None | Auth::Query(_, _) => request,
-                Auth::Bearer(token) => request.bearer_auth(token),
-                Auth::Header(name, value) => request.header(name, value),
-                Auth::Basic(username, password) => request.basic_auth(username, password.as_deref()),
+            auth.entries.iter().fold(request, apply_entry)
+        }
+
+        fn apply_selected(
+            request: reqwest::RequestBuilder,
+            auth: &Auth,
+            alternatives: &[&[AuthRequirement]],
+        ) -> Result<reqwest::RequestBuilder, SdkError> {
+            let selected = alternatives.iter().find(|alternative| {
+                alternative
+                    .iter()
+                    .all(|requirement| auth.entry_for(requirement).is_some())
+            });
+            let Some(selected) = selected else {
+                return Err(SdkError::MissingAuthentication);
+            };
+            let entries = selected
+                .iter()
+                .filter_map(|requirement| auth.entry_for(requirement))
+                .collect::<Vec<_>>();
+            if entries.len() != selected.len() {
+                return Err(SdkError::MissingAuthentication);
+            }
+            Ok(entries.into_iter().fold(request, apply_entry))
+        }
+    }
+}
+
+fn auth_entry_helper() -> TokenStream {
+    quote! {
+        fn apply_entry(
+            request: reqwest::RequestBuilder,
+            entry: &AuthEntry,
+        ) -> reqwest::RequestBuilder {
+            match entry {
+                AuthEntry::Bearer { token, .. } => request.bearer_auth(token),
+                AuthEntry::Http { scheme, value } => request.header(
+                    reqwest::header::AUTHORIZATION,
+                    format!("{scheme} {value}"),
+                ),
+                AuthEntry::ApiKeyHeader { name, value, .. } => request.header(name, value),
+                AuthEntry::ApiKeyQuery { name, value, .. } => request.query(&[(name, value)]),
+                AuthEntry::ApiKeyCookie { name, value, .. } => request.header(
+                    reqwest::header::COOKIE,
+                    format!("{name}={value}"),
+                ),
+                AuthEntry::Basic { username, password, .. } => {
+                    request.basic_auth(username, password.as_deref())
+                }
             }
         }
     }
@@ -64,6 +221,8 @@ pub(super) fn render_error() -> TokenStream {
             Http { status: u16, body: String },
             #[error("response body exceeded the configured limit")]
             ResponseTooLarge,
+            #[error("no configured credentials satisfy the operation's security requirements")]
+            MissingAuthentication,
         }
     }
 }

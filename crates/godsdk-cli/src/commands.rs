@@ -35,6 +35,12 @@ struct GenerateArgs {
 
     #[arg(long, default_value = "rust,typescript")]
     targets: String,
+
+    #[arg(
+        long,
+        help = "Delete stale generated files after checking for user edits"
+    )]
+    prune: bool,
 }
 
 pub fn run(cli: Cli) -> Result<(), godsdk_core::GenerationError> {
@@ -42,6 +48,7 @@ pub fn run(cli: Cli) -> Result<(), godsdk_core::GenerationError> {
     let mut request = GenerationRequest::new(args.source, args.output);
     request.mode = generation_mode(args.dry_run, args.check);
     request = request.with_targets(parse_targets(&args.targets)?);
+    request.prune = args.prune;
     let result = generate(&request)?;
     if request.mode == GenerationMode::DryRun {
         for path in result.files {

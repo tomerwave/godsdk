@@ -18,6 +18,10 @@ on:
         required: false
         default: dry-run
         type: string
+      prune:
+        required: false
+        default: false
+        type: boolean
       commit:
         required: false
         default: false
@@ -40,6 +44,10 @@ on:
         default: dry-run
         type: choice
         options: [write, dry-run, check]
+      prune:
+        required: true
+        default: false
+        type: boolean
       commit:
         required: true
         default: false
@@ -60,6 +68,7 @@ jobs:
           targets: ${{ inputs.targets }}
           output: ${{ inputs.output }}
           mode: ${{ inputs.mode }}
+          prune: ${{ inputs.prune }}
       - uses: actions/upload-artifact@v4
         with:
           name: godsdk-generated
@@ -82,6 +91,7 @@ jobs:
           targets: ${{ inputs.targets }}
           output: ${{ inputs.output }}
           mode: write
+          prune: ${{ inputs.prune }}
       - name: Commit generated changes
         env:
           GH_TOKEN: ${{ github.token }}

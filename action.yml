@@ -20,6 +20,10 @@ inputs:
     description: "Generation mode: write, dry-run, or check."
     required: false
     default: write
+  prune:
+    description: Delete stale generated files after checking for user edits.
+    required: false
+    default: "false"
   generator-version:
     description: GodSDK release version to download, without or with a leading v.
     required: false
@@ -65,6 +69,7 @@ runs:
         TARGETS: ${{ inputs.targets }}
         OUTPUT: ${{ inputs.output }}
         MODE: ${{ inputs.mode }}
+        PRUNE: ${{ inputs.prune }}
       run: |
         set -euo pipefail
         if [ -n "${SPEC_PATH}" ] && [ -n "${SPEC_URL}" ]; then
@@ -81,6 +86,9 @@ runs:
           curl --fail --location --retry 3 "${SPEC_URL}" -o "${spec}"
         fi
         args=(generate --source "${spec}" --output "${OUTPUT}" --targets "${TARGETS}")
+        if [ "${PRUNE}" = "true" ]; then
+          args+=(--prune)
+        fi
         case "${MODE}" in
           write) ;;
           dry-run) args+=(--dry-run) ;;

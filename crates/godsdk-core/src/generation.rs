@@ -47,6 +47,7 @@ fn plan_generation(request: &GenerationRequest) -> Result<GenerationResult, Gene
         changed.sort();
         changed.dedup();
     }
+    changed.retain(|path| path != Path::new("sdk/typescript/native/index.d.ts"));
     if request.mode == GenerationMode::Check {
         return check_changes(changed);
     }

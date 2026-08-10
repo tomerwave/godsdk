@@ -26,6 +26,7 @@ fn help_lists_the_generate_command() {
 
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("generate"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("validate"));
 }
 
 #[test]
@@ -59,4 +60,31 @@ fn generate_creates_a_rust_repository() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(output_path.join("sdk/rust/src/lib.rs").is_file());
+}
+
+#[test]
+fn validate_reports_document_summary_without_creating_output() {
+    let source = format!(
+        "{}/../../fixtures/openapi/minimal-3.0.yaml",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let output = run(&["validate", "--spec", &source]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("valid OpenAPI 3.0.3"));
+    assert!(stdout.contains("operations"));
+    assert!(stdout.contains("schemas"));
+}
+
+#[test]
+fn validate_requires_a_specification() {
+    let output = run(&["validate"]);
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("required arguments"));
 }

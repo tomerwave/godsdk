@@ -1,3 +1,4 @@
+use crate::code_writer::CodeWriter;
 use crate::{Operation, ParameterLocation, Schema, rust_identifier};
 
 use super::{
@@ -6,35 +7,25 @@ use super::{
 };
 
 pub(super) fn client_method(operation: &Operation) -> String {
-    let method = python_identifier(&rust_identifier(&operation.operation_id));
-    let mut parameters = Vec::new();
-    if let Some(body) = operation.request_body_details.as_ref() {
-        let ty = body
-            .schema
-            .as_ref()
-            .map(python_schema_type)
-            .unwrap_or_else(|| "JsonValue".to_string());
-        parameters.push(if body.required {
-            format!("request_body: {ty}")
-        } else {
-            format!("request_body: {ty} | None = None")
-        });
-    }
-    parameters.extend(ordered_parameters(operation).into_iter().map(|parameter| {
-        let name = python_identifier(&parameter.name);
-        let ty = if parameter.location == ParameterLocation::Path {
-            "str".to_string()
-        } else {
-            python_schema_type(&parameter.schema)
-        };
-        if parameter.required {
-            format!("{name}: {ty}")
-        } else {
-            format!("{name}: {ty} | None = None")
-        }
-    }));
-    let parameters = parameters.join(", ");
+    let (method, parameters, return_type) = client_signature(operation);
     let arguments = native_arguments(operation);
+    let body = client_method_body(operation, &method, &arguments, &return_type);
+    CodeWriter::from_parts([
+        "    def ".to_string(),
+        method,
+        "(self, ".to_string(),
+        parameters,
+        ") -> ".to_string(),
+        return_type,
+        ":\n".to_string(),
+        body,
+        "\n".to_string(),
+    ])
+}
+
+fn client_signature(operation: &Operation) -> (String, String, String) {
+    let method = python_identifier(&rust_identifier(&operation.operation_id));
+    let parameters = python_parameters(operation);
     let response = operation
         .responses
         .iter()
@@ -45,8 +36,37 @@ pub(super) fn client_method(operation: &Operation) -> String {
             schema_model_name(schema).or_else(|| Some(operation_response_name(operation)))
         })
         .unwrap_or_else(|| "None".to_string());
-    let body = client_method_body(operation, &method, &arguments, &return_type);
-    format!("    def {method}(self, {parameters}) -> {return_type}:\n{body}\n")
+    (method, parameters, return_type)
+}
+
+fn python_parameters(operation: &Operation) -> String {
+    let mut parameters = Vec::new();
+    if let Some(body) = operation.request_body_details.as_ref() {
+        let ty = body
+            .schema
+            .as_ref()
+            .map(python_schema_type)
+            .unwrap_or_else(|| "JsonValue".to_string());
+        parameters.push(if body.required {
+            ["request_body: ", &ty].concat()
+        } else {
+            ["request_body: ", &ty, " | None = None"].concat()
+        });
+    }
+    parameters.extend(ordered_parameters(operation).into_iter().map(|parameter| {
+        let name = python_identifier(&parameter.name);
+        let ty = if parameter.location == ParameterLocation::Path {
+            "str".to_string()
+        } else {
+            python_schema_type(&parameter.schema)
+        };
+        if parameter.required {
+            [name, ": ".to_string(), ty].concat()
+        } else {
+            [name, ": ".to_string(), ty, " | None = None".to_string()].concat()
+        }
+    }));
+    parameters.join(", ")
 }
 
 fn client_method_body(
@@ -56,9 +76,15 @@ fn client_method_body(
     return_type: &str,
 ) -> String {
     if return_type == "None" {
-        return format!(
-            "        raw = cast(dict[str, JsonValue], json.loads(self._native.{method}({arguments})))\n        if raw[\"ok\"] is not True:\n            raise SdkHttpError(int(raw[\"status\"]), raw[\"body\"])\n"
-        );
+        return CodeWriter::from_parts([
+            "        raw = cast(dict[str, JsonValue], json.loads(self._native.".to_string(),
+            method.to_string(),
+            "(".to_string(),
+            arguments.to_string(),
+            ")))\n".to_string(),
+            "        if raw[\"ok\"] is not True:\n".to_string(),
+            "            raise SdkHttpError(int(raw[\"status\"]), raw[\"body\"])\n".to_string(),
+        ]);
     }
     let error = has_error_responses(operation)
         .then(|| format!("{}Error", type_identifier(&operation.operation_id)));
@@ -68,9 +94,18 @@ fn client_method_body(
             format!("            raise {error}.from_native(int(raw[\"status\"]), raw[\"body\"])")
         },
     );
-    format!(
-        "        raw = cast(dict[str, JsonValue], json.loads(self._native.{method}({arguments})))\n        if raw[\"ok\"] is not True:\n{error_handling}\n        return {return_type}.model_validate(raw[\"value\"])\n"
-    )
+    CodeWriter::from_parts([
+        "        raw = cast(dict[str, JsonValue], json.loads(self._native.".to_string(),
+        method.to_string(),
+        "(".to_string(),
+        arguments.to_string(),
+        ")))\n".to_string(),
+        "        if raw[\"ok\"] is not True:\n".to_string(),
+        error_handling,
+        "\n        return ".to_string(),
+        return_type.to_string(),
+        ".model_validate(raw[\"value\"])\n".to_string(),
+    ])
 }
 
 fn native_arguments(operation: &Operation) -> String {
@@ -125,9 +160,12 @@ pub(super) fn native_method(operation: &Operation, crate_name: &str) -> String {
     let method = rust_identifier(&operation.operation_id);
     let (parameters, conversions, arguments) = native_inputs(operation, crate_name);
     let body = native_call_body(operation, &method, &arguments);
-    format!(
-        "    fn {method}(&self{parameters}) -> PyResult<String> {{\n        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(to_python_error)?;\n{conversions}{body}\n    }}\n\n"
-    )
+    CodeWriter::from_parts([
+        "    fn ".to_string(), method, "(&self".to_string(), parameters,
+        ") -> PyResult<String> {\n".to_string(),
+        "        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(to_python_error)?;\n".to_string(),
+        conversions, body, "    }\n\n".to_string(),
+    ])
 }
 
 fn native_inputs(operation: &Operation, crate_name: &str) -> (String, String, String) {
@@ -222,13 +260,18 @@ fn native_body_input(operation: &Operation, crate_name: &str) -> Option<(String,
 
 fn native_call_body(operation: &Operation, method: &str, arguments: &str) -> String {
     if has_error_responses(operation) {
-        format!(
-            "        match runtime.block_on(self.inner.{method}({arguments})) {{\n            Ok(value) => encode_success_value(serde_json::to_value(value).map_err(to_python_error)?),\n            Err(error) => encode_{method}_error(error),\n        }}"
-        )
+        CodeWriter::from_parts([
+            "        match runtime.block_on(self.inner.".to_string(), method.to_string(), "(".to_string(), arguments.to_string(), ")) {\n".to_string(),
+            "            Ok(value) => encode_success_value(serde_json::to_value(value).map_err(to_python_error)?),\n".to_string(),
+            "            Err(error) => encode_".to_string(), method.to_string(), "_error(error),\n        }".to_string(),
+        ])
     } else {
-        format!(
-            "        match runtime.block_on(self.inner.{method}({arguments})) {{\n            Ok(value) => encode_success_value(serde_json::to_value(value).map_err(to_python_error)?),\n            Err(SdkError::Http {{ status, body }}) => encode_http_error(status, serde_json::Value::String(body)),\n            Err(error) => Err(to_python_error(error)),\n        }}"
-        )
+        CodeWriter::from_parts([
+            "        match runtime.block_on(self.inner.".to_string(), method.to_string(), "(".to_string(), arguments.to_string(), ")) {\n".to_string(),
+            "            Ok(value) => encode_success_value(serde_json::to_value(value).map_err(to_python_error)?),\n".to_string(),
+            "            Err(SdkError::Http { status, body }) => encode_http_error(status, serde_json::Value::String(body)),\n".to_string(),
+            "            Err(error) => Err(to_python_error(error)),\n        }".to_string(),
+        ])
     }
 }
 

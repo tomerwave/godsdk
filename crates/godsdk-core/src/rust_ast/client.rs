@@ -6,6 +6,7 @@ pub(super) fn render_mod() -> TokenStream {
         mod auth;
         mod builder;
         mod error;
+        mod parameter_serialization;
         mod retry;
         mod transport;
 
@@ -18,10 +19,10 @@ pub(super) fn render_mod() -> TokenStream {
             is_idempotent, parse_retry_after, should_retry_status, sleep_before_retry,
         };
         #[allow(unused_imports)]
-        pub(crate) use transport::{
+        pub(crate) use parameter_serialization::{
             serialize_cookie_value, serialize_parameter_value, serialize_path_parameter_value,
-            HttpResponse, RequestOptions,
         };
+        pub(crate) use transport::{HttpResponse, RequestOptions};
     }
 }
 
@@ -183,6 +184,22 @@ fn auth_selection_helpers() -> TokenStream {
 
 fn auth_entry_helper() -> TokenStream {
     quote! {
+        fn auth_header_value(scheme: &str, value: &str) -> String {
+            let mut output = String::with_capacity(scheme.len() + value.len() + 1);
+            output.push_str(scheme);
+            output.push(' ');
+            output.push_str(value);
+            output
+        }
+
+        fn cookie_header_value(name: &str, value: &str) -> String {
+            let mut output = String::with_capacity(name.len() + value.len() + 1);
+            output.push_str(name);
+            output.push('=');
+            output.push_str(value);
+            output
+        }
+
         fn apply_entry(
             request: reqwest::RequestBuilder,
             entry: &AuthEntry,
@@ -191,13 +208,13 @@ fn auth_entry_helper() -> TokenStream {
                 AuthEntry::Bearer { token, .. } => request.bearer_auth(token),
                 AuthEntry::Http { scheme, value } => request.header(
                     reqwest::header::AUTHORIZATION,
-                    format!("{scheme} {value}"),
+                    auth_header_value(scheme, value),
                 ),
                 AuthEntry::ApiKeyHeader { name, value, .. } => request.header(name, value),
                 AuthEntry::ApiKeyQuery { name, value, .. } => request.query(&[(name, value)]),
                 AuthEntry::ApiKeyCookie { name, value, .. } => request.header(
                     reqwest::header::COOKIE,
-                    format!("{name}={value}"),
+                    cookie_header_value(name, value),
                 ),
                 AuthEntry::Basic { username, password, .. } => {
                     request.basic_auth(username, password.as_deref())

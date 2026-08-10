@@ -22,6 +22,10 @@ pub(crate) fn render_files(spec: &ApiIr) -> Vec<(String, String)> {
         rust_file("sdk/rust/src/client/builder.rs", builder::render()),
         rust_file("sdk/rust/src/client/error.rs", client::render_error()),
         rust_file("sdk/rust/src/client/retry.rs", client::render_retry()),
+        rust_file(
+            "sdk/rust/src/client/parameter_serialization.rs",
+            parameter_serialization::render(),
+        ),
         rust_file("sdk/rust/src/client/transport.rs", transport::render()),
         rust_file("sdk/rust/src/operations/mod.rs", operations::render(spec)),
     ];

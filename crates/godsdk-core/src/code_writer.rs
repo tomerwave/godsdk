@@ -16,9 +16,25 @@ impl CodeWriter {
         output.finish()
     }
 
+    pub(crate) fn from_parts<I, T>(parts: I) -> String
+    where
+        I: IntoIterator<Item = T>,
+        T: AsRef<str>,
+    {
+        let mut output = Self::default();
+        for part in parts {
+            output.push(part.as_ref());
+        }
+        output.finish()
+    }
+
     pub(crate) fn line(&mut self, value: impl Display) {
         self.output.push_str(&value.to_string());
         self.output.push('\n');
+    }
+
+    pub(crate) fn push(&mut self, value: &str) {
+        self.output.push_str(value);
     }
 
     pub(crate) fn lines<I, T>(&mut self, lines: I)

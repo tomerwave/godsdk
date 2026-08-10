@@ -3,26 +3,39 @@ use quote::quote;
 
 pub(super) fn render() -> TokenStream {
     let helpers = [
+        path_encoding(),
         value_helpers(),
         pair_helpers(),
         path_helpers(),
         serialization_tests(),
     ];
     quote! {
-        #[allow(dead_code)]
-        mod parameter_serialization {
-            use super::*;
-            #(#helpers)*
-        }
+        #![allow(dead_code)]
+        use super::SdkError;
+        #(#helpers)*
 
-        pub(crate) use parameter_serialization::{
-            serialize_cookie_value, serialize_parameter_value,
-            serialize_path_parameter_value,
-        };
+    }
+}
+
+fn path_encoding() -> TokenStream {
+    quote! {
+        fn encode_path_segment(value: &str) -> String {
+            percent_encoding::percent_encode(value.as_bytes(), percent_encoding::NON_ALPHANUMERIC)
+                .to_string()
+                .replace("%2D", "-")
+                .replace("%5F", "_")
+                .replace("%2E", ".")
+                .replace("%7E", "~")
+        }
     }
 }
 
 fn value_helpers() -> TokenStream {
+    let helpers = [scalar_helpers(), component_helpers(), join_helpers()];
+    quote! { #(#helpers)* }
+}
+
+fn scalar_helpers() -> TokenStream {
     quote! {
         fn parameter_scalar(value: &serde_json::Value) -> Result<String, SdkError> {
             match value {
@@ -34,6 +47,11 @@ fn value_helpers() -> TokenStream {
             }
         }
 
+    }
+}
+
+fn component_helpers() -> TokenStream {
+    quote! {
         fn parameter_components(
             value: &serde_json::Value,
         ) -> Result<Vec<(String, String)>, SdkError> {
@@ -50,6 +68,11 @@ fn value_helpers() -> TokenStream {
             }
         }
 
+    }
+}
+
+fn join_helpers() -> TokenStream {
+    quote! {
         fn parameter_join(values: &[(String, String)], delimiter: &str) -> String {
             values
                 .iter()
@@ -63,11 +86,25 @@ fn value_helpers() -> TokenStream {
             delimiter: &str,
             separator: &str,
         ) -> String {
-            values
-                .iter()
-                .map(|(name, value)| format!("{name}{separator}{value}"))
-                .collect::<Vec<_>>()
-                .join(delimiter)
+            let mut output = String::new();
+            for (index, (name, value)) in values.iter().enumerate() {
+                if index > 0 {
+                    output.push_str(delimiter);
+                }
+                output.push_str(name);
+                output.push_str(separator);
+                output.push_str(value);
+            }
+            output
+        }
+
+        fn parameter_key(name: &str, key: &str) -> String {
+            let mut output = String::with_capacity(name.len() + key.len() + 2);
+            output.push_str(name);
+            output.push('[');
+            output.push_str(key);
+            output.push(']');
+            output
         }
     }
 }
@@ -106,7 +143,7 @@ fn parameter_helpers() -> TokenStream {
                 }
                 (serde_json::Value::Object(_), "deepObject", _) => Ok(components
                     .into_iter()
-                    .map(|(key, value)| (format!("{name}[{key}]"), value))
+                    .map(|(key, value)| (parameter_key(name, &key), value))
                     .collect()),
                 (serde_json::Value::Object(_), "form", true) => Ok(components),
                 (serde_json::Value::Object(_), _, true) => Ok(vec![(
@@ -141,6 +178,22 @@ fn parameter_value_helpers() -> TokenStream {
 
 fn cookie_helpers() -> TokenStream {
     quote! {
+        fn cookie_pair(name: &str, value: &str) -> String {
+            let mut output = String::with_capacity(name.len() + value.len() + 1);
+            output.push_str(name);
+            output.push('=');
+            output.push_str(value);
+            output
+        }
+
+        fn cookie_pairs(values: &[(String, String)], name: &str) -> String {
+            values
+                .iter()
+                .map(|(_, value)| cookie_pair(name, value))
+                .collect::<Vec<_>>()
+                .join("; ")
+        }
+
         pub(crate) fn serialize_cookie(
             name: &str,
             value: serde_json::Value,
@@ -150,23 +203,17 @@ fn cookie_helpers() -> TokenStream {
             match (&value, explode) {
                 (serde_json::Value::Object(_), true) => Ok(components
                     .into_iter()
-                    .map(|(name, value)| format!("{name}={value}"))
+                    .map(|(name, value)| cookie_pair(&name, &value))
                     .collect::<Vec<_>>()
                     .join("; ")),
-                (serde_json::Value::Object(_), false) => Ok(format!(
-                    "{name}={}",
-                    parameter_join_object(&components, ",", ",")
-                )),
-                (serde_json::Value::Array(_), true) => Ok(components
-                    .into_iter()
-                    .map(|(_, value)| format!("{name}={value}"))
-                    .collect::<Vec<_>>()
-                    .join("; ")),
-                (serde_json::Value::Array(_), false) => Ok(format!(
-                    "{name}={}",
-                    parameter_join(&components, ",")
-                )),
-                _ => Ok(format!("{name}={}", parameter_scalar(&value)?)),
+                (serde_json::Value::Object(_), false) => {
+                    Ok(cookie_pair(name, &parameter_join_object(&components, ",", ",")))
+                }
+                (serde_json::Value::Array(_), true) => Ok(cookie_pairs(&components, name)),
+                (serde_json::Value::Array(_), false) => {
+                    Ok(cookie_pair(name, &parameter_join(&components, ",")))
+                }
+                _ => Ok(cookie_pair(name, &parameter_scalar(&value)?)),
             }
         }
 
@@ -224,6 +271,13 @@ fn path_parameter_helpers() -> TokenStream {
 
 fn path_value_helpers() -> TokenStream {
     quote! {
+        fn path_prefixed(prefix: &str, value: &str) -> String {
+            let mut output = String::with_capacity(prefix.len() + value.len());
+            output.push_str(prefix);
+            output.push_str(value);
+            output
+        }
+
         fn serialize_path_scalar(
             value: &serde_json::Value,
             name: &str,
@@ -231,8 +285,8 @@ fn path_value_helpers() -> TokenStream {
         ) -> Result<String, SdkError> {
             let value = encode_path_segment(&parameter_scalar(value)?);
             Ok(match style {
-                "label" => format!(".{value}"),
-                "matrix" => format!(";{name}={value}"),
+                "label" => path_prefixed(".", &value),
+                "matrix" => path_prefixed(&[";", name, "="].concat(), &value),
                 _ => value,
             })
         }
@@ -242,6 +296,20 @@ fn path_value_helpers() -> TokenStream {
 
 fn path_array_helpers() -> TokenStream {
     quote! {
+        fn path_matrix_values(name: &str, values: &[String]) -> String {
+            values
+                .iter()
+                .map(|value| {
+                    let mut output = String::with_capacity(name.len() + value.len() + 2);
+                    output.push(';');
+                    output.push_str(name);
+                    output.push('=');
+                    output.push_str(value);
+                    output
+                })
+                .collect()
+        }
+
         fn serialize_path_array(
             components: &[(String, String)],
             name: &str,
@@ -253,13 +321,10 @@ fn path_array_helpers() -> TokenStream {
                 .map(|(_, value)| encode_path_segment(value))
                 .collect::<Vec<_>>();
             Ok(match (style, explode) {
-                ("label", true) => format!(".{}", values.join(".")),
-                ("label", false) => format!(".{}", values.join(",")),
-                ("matrix", true) => values
-                    .iter()
-                    .map(|value| format!(";{name}={value}"))
-                    .collect(),
-                ("matrix", false) => format!(";{name}={}", values.join(",")),
+                ("label", true) => path_prefixed(".", &values.join(".")),
+                ("label", false) => path_prefixed(".", &values.join(",")),
+                ("matrix", true) => path_matrix_values(name, &values),
+                ("matrix", false) => path_prefixed(&[";", name, "="].concat(), &values.join(",")),
                 _ => values.join(","),
             })
         }
@@ -302,21 +367,27 @@ fn path_object_main() -> TokenStream {
 
 fn path_object_label() -> TokenStream {
     quote! {
+        fn path_object_dotted(values: &[(&String, String)]) -> String {
+            let mut output = String::from(".");
+            for (index, (key, value)) in values.iter().enumerate() {
+                if index > 0 {
+                    output.push('.');
+                }
+                output.push_str(key);
+                output.push('=');
+                output.push_str(value);
+            }
+            output
+        }
+
         fn serialize_path_object_label(
             values: &[(&String, String)],
             explode: bool,
         ) -> String {
             if explode {
-                format!(
-                    ".{}",
-                    values
-                        .iter()
-                        .map(|(key, value)| format!("{key}={value}"))
-                        .collect::<Vec<_>>()
-                        .join(".")
-                )
+                path_object_dotted(values)
             } else {
-                format!(".{}", serialize_path_object_pairs(values, ","))
+                path_prefixed(".", &serialize_path_object_pairs(values, ","))
             }
         }
 
@@ -325,18 +396,29 @@ fn path_object_label() -> TokenStream {
 
 fn path_object_matrix() -> TokenStream {
     quote! {
+        fn path_object_matrix_exploded(values: &[(&String, String)]) -> String {
+            let mut output = String::new();
+            for (key, value) in values {
+                output.push(';');
+                output.push_str(key);
+                output.push('=');
+                output.push_str(value);
+            }
+            output
+        }
+
         fn serialize_path_object_matrix(
             values: &[(&String, String)],
             name: &str,
             explode: bool,
         ) -> String {
             if explode {
-                values
-                    .iter()
-                    .map(|(key, value)| format!(";{key}={value}"))
-                    .collect()
+                path_object_matrix_exploded(values)
             } else {
-                format!(";{name}={}", serialize_path_object_pairs(values, ","))
+                path_prefixed(
+                    &[";", name, "="].concat(),
+                    &serialize_path_object_pairs(values, ","),
+                )
             }
         }
 
@@ -345,16 +427,25 @@ fn path_object_matrix() -> TokenStream {
 
 fn path_object_default() -> TokenStream {
     quote! {
+        fn path_object_equals(values: &[(&String, String)]) -> String {
+            let mut output = String::new();
+            for (index, (key, value)) in values.iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                output.push_str(key);
+                output.push('=');
+                output.push_str(value);
+            }
+            output
+        }
+
         fn serialize_path_object_default(
             values: &[(&String, String)],
             explode: bool,
         ) -> String {
             if explode {
-                values
-                    .iter()
-                    .map(|(key, value)| format!("{key}={value}"))
-                    .collect::<Vec<_>>()
-                    .join(",")
+                path_object_equals(values)
             } else {
                 serialize_path_object_pairs(values, ",")
             }

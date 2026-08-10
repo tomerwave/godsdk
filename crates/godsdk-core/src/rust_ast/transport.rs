@@ -2,13 +2,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 pub(super) fn render() -> TokenStream {
-    let sections = [
-        imports(),
-        client_request(),
-        body_helpers(),
-        path_encoding(),
-        super::parameter_serialization::render(),
-    ];
+    let sections = [imports(), client_request(), body_helpers()];
     quote! { #(#sections)* }
 }
 
@@ -215,19 +209,6 @@ fn body_helpers() -> TokenStream {
                 Err(SdkError::ResponseTooLarge) => Ok("<response body omitted: limit exceeded>".to_string()),
                 Err(error) => Err(error),
             }
-        }
-    }
-}
-
-fn path_encoding() -> TokenStream {
-    quote! {
-        pub(crate) fn encode_path_segment(value: &str) -> String {
-            percent_encoding::percent_encode(value.as_bytes(), percent_encoding::NON_ALPHANUMERIC)
-                .to_string()
-                .replace("%2D", "-")
-                .replace("%5F", "_")
-                .replace("%2E", ".")
-                .replace("%7E", "~")
         }
     }
 }

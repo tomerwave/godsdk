@@ -1,0 +1,80 @@
+name: Generated SDK E2E
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generated-e2e:
+    name: Generate and verify Rust SDK
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install 1.97.1 --profile minimal
+
+      - name: Install Rust quality components
+        run: rustup component add rustfmt clippy --toolchain 1.97.1
+
+      - name: Install Godlint
+        run: scripts/install_godlint.sh
+
+      - name: Install Godharness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/install_godharness.sh
+
+      - name: Generate a fresh SDK repository
+        run: |
+          rm -rf /tmp/godsdk-generated
+          cargo +1.97.1 run --quiet -p godsdk-cli -- generate \
+            --source fixtures/openapi/minimal-3.1.yaml \
+            --output /tmp/godsdk-generated
+
+      - name: Check generated formatting
+        working-directory: /tmp/godsdk-generated/sdk/rust
+        run: cargo +1.97.1 fmt --all -- --check
+
+      - name: Run generated Clippy
+        working-directory: /tmp/godsdk-generated/sdk/rust
+        run: cargo +1.97.1 clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Run generated tests
+        working-directory: /tmp/godsdk-generated/sdk/rust
+        run: cargo +1.97.1 test --all-features --locked
+
+      - name: Build generated SDK
+        working-directory: /tmp/godsdk-generated/sdk/rust
+        run: cargo +1.97.1 build --all-features --locked
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install generated TypeScript dependencies
+        working-directory: /tmp/godsdk-generated/sdk/typescript
+        run: npm install --no-audit --no-fund
+
+      - name: Build generated TypeScript SDK
+        working-directory: /tmp/godsdk-generated/sdk/typescript
+        run: npm run build
+
+      - name: Test generated TypeScript SDK
+        working-directory: /tmp/godsdk-generated/sdk/typescript
+        run: npm test
+
+      - name: Run Godlint on generated repository
+        working-directory: /tmp/godsdk-generated
+        run: godlint check --format github .
+
+      - name: Run Godharness on generated repository
+        working-directory: /tmp/godsdk-generated
+        run: godharness check

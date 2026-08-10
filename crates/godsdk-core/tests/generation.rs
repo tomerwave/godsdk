@@ -27,6 +27,14 @@ fn generates_a_compiling_rust_repository_skeleton() {
             .any(|path| path == "sdk/rust/src/lib.rs")
     );
     assert!(request.output_path().join("sdk/rust/Cargo.toml").is_file());
+    let cargo = std::fs::read_to_string(request.output_path().join("sdk/rust/Cargo.toml"))
+        .unwrap_or_else(|error| panic!("generated cargo manifest is readable: {error}"));
+    assert!(cargo.contains("reqwest"));
+    assert!(cargo.contains("tokio"));
+    let client = std::fs::read_to_string(request.output_path().join("sdk/rust/src/lib.rs"))
+        .unwrap_or_else(|error| panic!("generated client is readable: {error}"));
+    assert!(client.contains("pub struct ClientBuilder"));
+    assert!(client.contains("pub async fn"));
     assert!(
         request
             .output_path()
@@ -59,6 +67,47 @@ fn generated_client_calls_a_real_mock_server() {
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
     );
+}
+
+#[test]
+fn generated_typed_fixture_contains_rust_models_and_typed_response() {
+    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+    let request = GenerationRequest::new(
+        fixture("parameters-and-errors-3.1.yaml"),
+        output.path().join("generated"),
+    );
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+
+    let models = std::fs::read_to_string(request.output_path().join("sdk/rust/src/models.rs"))
+        .unwrap_or_else(|error| panic!("generated models are readable: {error}"));
+    let client = std::fs::read_to_string(request.output_path().join("sdk/rust/src/lib.rs"))
+        .unwrap_or_else(|error| panic!("generated client is readable: {error}"));
+    assert!(models.contains("pub struct Document"));
+    assert!(models.contains("pub struct Problem"));
+    assert!(client.contains("Result<Document, SdkError>"));
+}
+
+#[test]
+fn generated_typescript_uses_zod_and_typed_facade() {
+    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+    let request =
+        GenerationRequest::new(fixture("minimal-3.1.yaml"), output.path().join("generated"));
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+
+    let root = request.output_path().join("sdk/typescript");
+    let schemas = std::fs::read_to_string(root.join("src/schemas.ts"))
+        .unwrap_or_else(|error| panic!("generated schemas are readable: {error}"));
+    let types = std::fs::read_to_string(root.join("src/types.ts"))
+        .unwrap_or_else(|error| panic!("generated types are readable: {error}"));
+    let client = std::fs::read_to_string(root.join("src/index.ts"))
+        .unwrap_or_else(|error| panic!("generated client is readable: {error}"));
+    assert!(schemas.contains("import * as z from \"zod\";"));
+    assert!(schemas.contains("PetSchema"));
+    assert!(schemas.contains(".strict()"));
+    assert!(types.contains("z.infer<typeof PetSchema>"));
+    assert!(client.contains("Promise<Pet>"));
+    assert!(!client.contains("Promise<string>"));
+    assert!(!client.contains("any"));
 }
 
 #[test]

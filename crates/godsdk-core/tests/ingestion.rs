@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use godsdk_core::{ApiSpec, HttpMethod, IngestionError, ParameterLocation};
+use godsdk_core::{ApiSpec, HttpMethod, IngestionError, ParameterLocation, Schema};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -32,6 +32,30 @@ fn normalizes_yaml_operations_in_stable_order() {
             .iter()
             .any(|parameter| parameter.location == ParameterLocation::Cookie)
     );
+}
+
+#[test]
+fn normalizes_named_schemas_and_typed_operation_shapes() {
+    let spec = parse_fixture("parameters-and-errors-3.1.yaml");
+
+    assert!(matches!(spec.schemas["Document"], Schema::AllOf(_)));
+    assert!(matches!(spec.schemas["Problem"], Schema::Object { .. }));
+    let operation = &spec.operations[0];
+    assert!(
+        matches!(operation.request_body_schema, Some(Schema::Reference(ref name)) if name == "DocumentInput")
+    );
+    assert!(
+        matches!(operation.responses[0].schema, Some(Schema::Reference(ref name)) if name == "Document")
+    );
+}
+
+#[test]
+fn preserves_nullable_arrays_and_discriminated_unions() {
+    let spec = parse_fixture("schemas-composition-3.1.yaml");
+
+    assert!(matches!(spec.schemas["Page"], Schema::Object { .. }));
+    assert!(matches!(spec.schemas["Item"], Schema::OneOf(_)));
+    assert!(matches!(spec.schemas["ItemBase"], Schema::Object { .. }));
 }
 
 #[test]

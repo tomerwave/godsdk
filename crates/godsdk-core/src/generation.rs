@@ -58,7 +58,11 @@ fn staged_request(
 ) -> Result<(Option<ExistingManifest>, tempfile::TempDir, Vec<PathBuf>), GenerationError> {
     let existing_manifest = prepare_existing_generation(request)?;
     let (source, spec) = load_spec(request)?;
-    let (staging, planned) = staged_repository(&source, &spec, &request.targets)?;
+    let context = GenerationContext {
+        targets: &request.targets,
+        reference_policy: &request.reference_policy,
+    };
+    let (staging, planned) = staged_repository(&source, &spec, context)?;
     Ok((existing_manifest, staging, planned))
 }
 
@@ -74,11 +78,11 @@ fn prepare_existing_generation(
 fn staged_repository(
     source: &str,
     spec: &ApiIr,
-    targets: &[Target],
+    context: GenerationContext<'_>,
 ) -> Result<(tempfile::TempDir, Vec<PathBuf>), GenerationError> {
     let staging =
         tempfile::tempdir().map_err(|error| GenerationError::CreateOutput(error.to_string()))?;
-    let planned = generate_repository(staging.path(), source, spec, targets)?;
+    let planned = generate_repository(staging.path(), source, spec, context)?;
     Ok((staging, planned))
 }
 
@@ -86,27 +90,37 @@ fn generate_repository(
     root: &Path,
     source: &str,
     spec: &ApiIr,
-    targets: &[Target],
+    context: GenerationContext<'_>,
 ) -> Result<Vec<PathBuf>, GenerationError> {
     let mut generated = Vec::new();
     let output = GenerationOutput {
-        targets,
+        context,
         files: &mut generated,
     };
     write_generated_content(root, source, spec, output)?;
-    generate_lockfile(root, targets, &mut generated)?;
-    write_manifest(root, source, targets, &mut generated)?;
+    generate_lockfile(root, context.targets, &mut generated)?;
+    write_manifest(root, source, context.targets, &mut generated)?;
     Ok(generated)
 }
 
 struct GenerationOutput<'a> {
-    targets: &'a [Target],
+    context: GenerationContext<'a>,
     files: &'a mut Vec<PathBuf>,
+}
+
+#[derive(Clone, Copy)]
+struct GenerationContext<'a> {
+    targets: &'a [Target],
+    reference_policy: &'a super::ReferencePolicy,
 }
 
 fn load_spec(request: &GenerationRequest) -> Result<(String, ApiIr), GenerationError> {
     let source = read_source(request)?;
-    let spec = ApiIr::parse(&source)?;
+    let spec = ApiIr::parse_with_policy(
+        &source,
+        request.source_path().parent(),
+        &request.reference_policy,
+    )?;
     Ok((source, spec))
 }
 
@@ -116,10 +130,10 @@ fn write_generated_content(
     spec: &ApiIr,
     output: GenerationOutput<'_>,
 ) -> Result<(), GenerationError> {
-    let targets = output.targets;
+    let context = output.context;
     let files = output.files;
-    write_source_and_rust(root, source, spec, GenerationOutput { targets, files })?;
-    write_metadata(root, spec, targets, files)
+    write_source_and_rust(root, source, spec, GenerationOutput { context, files })?;
+    write_metadata(root, spec, context, files)
 }
 
 fn write_manifest(
@@ -171,7 +185,7 @@ fn write_source_and_rust(
 ) -> Result<(), GenerationError> {
     write_source_file(root, source, output.files)?;
     write_rust_files(root, spec, output.files)?;
-    write_binding_files(root, spec, output.targets, output.files)?;
+    write_binding_files(root, spec, output.context.targets, output.files)?;
     Ok(())
 }
 
@@ -346,12 +360,12 @@ fn generate_lockfile_at(
 fn write_metadata(
     root: &Path,
     spec: &ApiIr,
-    targets: &[Target],
+    context: GenerationContext<'_>,
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
-    write_workflows(root, targets, generated)?;
-    write_project_metadata(root, spec, targets, generated)?;
-    write_attention_document(root, targets, generated)
+    write_workflows(root, context.targets, generated)?;
+    write_project_metadata(root, spec, context, generated)?;
+    write_attention_document(root, context.targets, generated)
 }
 
 fn write_workflows(
@@ -453,13 +467,13 @@ impl TargetBlockFilter {
 fn write_project_metadata(
     root: &Path,
     spec: &ApiIr,
-    targets: &[Target],
+    context: GenerationContext<'_>,
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
     write_file(
         root,
         ".godsdk/config.yaml",
-        &render_config(spec, targets),
+        &render_config(spec, context.targets, context.reference_policy),
         generated,
     )?;
     write_file(root, "godlint.yaml", &render_generated_godlint(), generated)?;
@@ -472,7 +486,12 @@ fn write_project_metadata(
         )),
         generated,
     )?;
-    write_file(root, "README.md", &render_readme(spec, targets), generated)
+    write_file(
+        root,
+        "README.md",
+        &render_readme(spec, context.targets),
+        generated,
+    )
 }
 
 fn write_attention_document(

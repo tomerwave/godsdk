@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -31,6 +32,37 @@ pub struct GenerationRequest {
     pub mode: GenerationMode,
     pub targets: Vec<Target>,
     pub prune: bool,
+    pub reference_policy: ReferencePolicy,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReferencePolicy {
+    allowed_hosts: BTreeSet<String>,
+    sha256_pins: BTreeMap<String, String>,
+}
+
+impl ReferencePolicy {
+    pub fn allow_remote_host(mut self, host: impl Into<String>) -> Self {
+        self.allowed_hosts.insert(host.into().to_ascii_lowercase());
+        self
+    }
+
+    pub fn pin_remote_reference(
+        mut self,
+        url: impl Into<String>,
+        sha256: impl Into<String>,
+    ) -> Self {
+        self.sha256_pins.insert(url.into(), sha256.into());
+        self
+    }
+
+    pub(crate) fn allows_host(&self, host: &str) -> bool {
+        self.allowed_hosts.contains(&host.to_ascii_lowercase())
+    }
+
+    pub(crate) fn checksum_for(&self, url: &str) -> Option<&str> {
+        self.sha256_pins.get(url).map(String::as_str)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -55,6 +87,7 @@ impl GenerationRequest {
             mode: GenerationMode::Write,
             targets: vec![Target::Rust, Target::TypeScript],
             prune: false,
+            reference_policy: ReferencePolicy::default(),
         }
     }
 
@@ -93,6 +126,11 @@ impl GenerationRequest {
         self.targets.dedup();
         self
     }
+
+    pub fn with_reference_policy(mut self, reference_policy: ReferencePolicy) -> Self {
+        self.reference_policy = reference_policy;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +160,8 @@ pub enum GenerationError {
     OutOfDate(Vec<PathBuf>),
     #[error("unknown generation target {0}; expected rust, python, or typescript")]
     InvalidTarget(String),
+    #[error("invalid remote reference policy: {0}")]
+    InvalidReferencePolicy(String),
 }
 
 pub(crate) fn write_file(
@@ -169,15 +209,27 @@ pub(crate) fn render_rust_cargo(spec: &ApiIr) -> String {
     )
 }
 
-pub(crate) fn render_config(spec: &ApiIr, targets: &[Target]) -> String {
+pub(crate) fn render_config(
+    spec: &ApiIr,
+    targets: &[Target],
+    reference_policy: &ReferencePolicy,
+) -> String {
     let target_names = targets
         .iter()
         .map(|target| target.as_str())
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "project:\n  name: {}-sdk\n  version: 0.1.0\n\nspec:\n  path: api/openapi.yaml\n  allow_remote_refs: false\n\ntargets: [{}]\n\nrelease:\n  enabled: true\n  crates_io:\n    enabled: true\n    package: {}-sdk\n  pypi:\n    enabled: {}\n    package: {}-sdk\n  npm:\n    enabled: {}\n    package: {}-sdk\n    publish_provenance: true\n  github:\n    enabled: true\n    workflow: release.yml\n",
+        "project:\n  name: {}-sdk\n  version: 0.1.0\n\nspec:\n  path: api/openapi.yaml\n  allow_remote_refs: {}\n  remote_ref_hosts: [{}]\n  remote_ref_sha256: {}\ntargets: [{}]\n\nrelease:\n  enabled: true\n  crates_io:\n    enabled: true\n    package: {}-sdk\n  pypi:\n    enabled: {}\n    package: {}-sdk\n  npm:\n    enabled: {}\n    package: {}-sdk\n    publish_provenance: true\n  github:\n    enabled: true\n    workflow: release.yml\n",
         slug(&spec.title),
+        !reference_policy.allowed_hosts.is_empty() && !reference_policy.sha256_pins.is_empty(),
+        reference_policy
+            .allowed_hosts
+            .iter()
+            .map(|host| format!("\"{host}\""))
+            .collect::<Vec<_>>()
+            .join(", "),
+        render_reference_pins(reference_policy),
         target_names,
         slug(&spec.title),
         targets.contains(&Target::Python),
@@ -185,6 +237,19 @@ pub(crate) fn render_config(spec: &ApiIr, targets: &[Target]) -> String {
         targets.contains(&Target::TypeScript),
         slug(&spec.title),
     )
+}
+
+fn render_reference_pins(policy: &ReferencePolicy) -> String {
+    let pins = policy
+        .sha256_pins
+        .iter()
+        .map(|(url, checksum)| format!("    \"{url}\": \"{checksum}\"\n"))
+        .collect::<String>();
+    if pins.is_empty() {
+        "{}".to_string()
+    } else {
+        format!("\n{pins}")
+    }
 }
 
 pub(crate) fn render_readme(spec: &ApiIr, targets: &[Target]) -> String {

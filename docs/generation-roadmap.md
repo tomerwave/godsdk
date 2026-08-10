@@ -189,9 +189,9 @@ mode               generate | dry-run | check
 prune              default false
 ```
 
-The Action must never silently fetch remote references. Remote specs and remote `$ref` resolution
-must be opt-in, constrained by an allowlist or checksum policy, and reported in the generation
-manifest.
+The Action must never silently fetch remote references. Remote `$ref` resolution is opt-in and
+requires both an allowlisted host and a SHA-256 pin for each retrieved document. The active policy
+is recorded in generated configuration without storing secrets.
 
 ### Reusable workflow contract
 

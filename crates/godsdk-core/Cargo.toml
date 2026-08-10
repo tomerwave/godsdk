@@ -22,6 +22,7 @@ proc-macro2.workspace = true
 quote.workspace = true
 syn.workspace = true
 tempfile.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

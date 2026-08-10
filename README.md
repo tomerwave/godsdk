@@ -67,8 +67,8 @@ OpenAPI or custom specification
 
 The intended stages are:
 
-1. Ingest OpenAPI 3.0/3.1 JSON and YAML, including local references. Remote references are currently
-   rejected by default; future opt-in support will require an explicit host allowlist and checksum policy.
+1. Ingest OpenAPI 3.0/3.1 JSON and YAML, including local references. Remote `$ref` documents are
+   opt-in and require both an allowlisted host and a SHA-256 pin.
 2. Normalize endpoints, models, authentication, casing, and response shapes into a typed IR.
 3. Generate a publishable Rust client core with shared HTTP, serialization, auth, retry, and
    rate-limit behavior.

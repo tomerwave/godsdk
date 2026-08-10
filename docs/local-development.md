@@ -29,9 +29,10 @@ cargo run -p godsdk-cli -- validate --spec spec.yaml
 ```
 
 `validate` is non-mutating: it parses the specification and reports its normalized summary without
-creating generated files. GodSDK currently accepts OpenAPI 3.0.x and 3.1.x, resolves local
-references, and rejects remote references by default. The command creates a fresh generated
-repository. The generated Rust client is async-first and
+creating generated files. GodSDK accepts OpenAPI 3.0.x and 3.1.x. Local references resolve by
+default; remote references require both `--remote-ref-host HOST` and
+`--remote-ref-pin URL=SHA256`. The command creates a fresh generated repository. The generated
+Rust client is async-first and
 its local mock-server integration test runs without internet access:
 
 ```sh

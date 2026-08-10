@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::ReferencePolicy;
 use crate::Schema;
 use crate::ingestion_contracts::normalize_operation_contract;
 use crate::ingestion_refs::resolve_external_references;
@@ -116,21 +117,40 @@ enum RawParameter {
 
 impl ApiIr {
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, IngestionError> {
+        Self::from_path_with_policy(path, &ReferencePolicy::default())
+    }
+
+    pub fn from_path_with_policy(
+        path: impl AsRef<Path>,
+        reference_policy: &ReferencePolicy,
+    ) -> Result<Self, IngestionError> {
         let path = path.as_ref();
         let source = fs::read_to_string(path).map_err(|error| IngestionError::Read {
             path: path.to_path_buf(),
             message: error.to_string(),
         })?;
-        Self::parse_source(&source, path.parent())
+        Self::parse_source(&source, path.parent(), reference_policy)
     }
 
     pub fn parse(source: &str) -> Result<Self, IngestionError> {
-        Self::parse_source(source, None)
+        Self::parse_with_policy(source, None, &ReferencePolicy::default())
     }
 
-    fn parse_source(source: &str, base_directory: Option<&Path>) -> Result<Self, IngestionError> {
+    pub fn parse_with_policy(
+        source: &str,
+        base_directory: Option<&Path>,
+        reference_policy: &ReferencePolicy,
+    ) -> Result<Self, IngestionError> {
+        Self::parse_source(source, base_directory, reference_policy)
+    }
+
+    fn parse_source(
+        source: &str,
+        base_directory: Option<&Path>,
+        reference_policy: &ReferencePolicy,
+    ) -> Result<Self, IngestionError> {
         let (raw_value, references) = parse_document_value(source)?;
-        let raw_value = resolve_document_value(raw_value, base_directory)?;
+        let raw_value = resolve_document_value(raw_value, base_directory, reference_policy)?;
         let raw = parse_raw_document(raw_value)?;
         let mut spec = normalize_raw_document(raw)?;
         spec.references = references.into_iter().collect();
@@ -158,10 +178,10 @@ fn validate_openapi_version(version: &str) -> Result<(), IngestionError> {
 fn resolve_document_value(
     mut value: serde_json::Value,
     base_directory: Option<&Path>,
+    reference_policy: &ReferencePolicy,
 ) -> Result<serde_json::Value, IngestionError> {
-    if let Some(base_directory) = base_directory {
-        resolve_external_references(&mut value, base_directory)?;
-    }
+    let base_directory = base_directory.unwrap_or_else(|| Path::new("."));
+    resolve_external_references(&mut value, base_directory, reference_policy)?;
     Ok(value)
 }
 

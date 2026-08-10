@@ -88,3 +88,21 @@ fn validate_requires_a_specification() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("required arguments"));
 }
+
+#[test]
+fn validate_rejects_malformed_remote_reference_pins() {
+    let source = format!(
+        "{}/../../fixtures/openapi/minimal-3.1.yaml",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let output = run(&[
+        "validate",
+        "--spec",
+        &source,
+        "--remote-ref-pin",
+        "https://schemas.example.test/models.yaml=not-a-sha256",
+    ]);
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid SHA-256 pin"));
+}

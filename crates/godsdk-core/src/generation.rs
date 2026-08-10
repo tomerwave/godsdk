@@ -216,7 +216,7 @@ fn write_metadata(
         "godharness.yaml",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../godharness.yaml"
+            "/assets/godharness.yaml"
         )),
         generated,
     )?;
@@ -232,6 +232,6 @@ fn write_metadata(
 fn render_generated_godlint() -> String {
     format!(
         "{}\nexclude:\n  - sdk/typescript/native/index.js\n  - sdk/typescript/native/index.d.ts\n  - sdk/typescript/native/*.node\n  - sdk/typescript/native/target/**\n  - sdk/typescript/node_modules/**\n",
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../godlint.yaml"))
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/godlint.yaml"))
     )
 }

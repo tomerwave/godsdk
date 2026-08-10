@@ -101,13 +101,25 @@ fn generated_typescript_uses_zod_and_typed_facade() {
         .unwrap_or_else(|error| panic!("generated types are readable: {error}"));
     let client = std::fs::read_to_string(root.join("src/index.ts"))
         .unwrap_or_else(|error| panic!("generated client is readable: {error}"));
-    assert!(schemas.contains("import * as z from \"zod\";"));
-    assert!(schemas.contains("PetSchema"));
-    assert!(schemas.contains(".strict()"));
+    let package = std::fs::read_to_string(root.join("package.json"))
+        .unwrap_or_else(|error| panic!("generated package metadata is readable: {error}"));
+    assert!(
+        root.join("native/Cargo.toml").is_file()
+            && root.join("native/src/lib.rs").is_file()
+            && root.join("tests/client.test.ts").is_file()
+    );
+    assert!(
+        schemas.contains("import * as z from \"zod\";")
+            && schemas.contains("PetSchema")
+            && schemas.contains(".strict()")
+    );
     assert!(types.contains("z.infer<typeof PetSchema>"));
-    assert!(client.contains("Promise<Pet>"));
-    assert!(!client.contains("Promise<string>"));
-    assert!(!client.contains("any"));
+    assert!(package.contains("\"targets\"") && package.contains("aarch64-apple-darwin"));
+    assert!(
+        client.contains("Promise<Pet>")
+            && !client.contains("Promise<string>")
+            && !client.contains("any")
+    );
 }
 
 #[test]

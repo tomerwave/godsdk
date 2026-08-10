@@ -69,7 +69,7 @@ jobs:
 
       - name: Test generated TypeScript SDK
         working-directory: /tmp/godsdk-generated/sdk/typescript
-        run: npm test
+        run: npm run test:native
 
       - name: Run Godlint on generated repository
         working-directory: /tmp/godsdk-generated

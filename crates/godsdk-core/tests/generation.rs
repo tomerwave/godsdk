@@ -47,6 +47,20 @@ fn generates_a_compiling_rust_repository_skeleton() {
 }
 
 #[test]
+fn generated_repository_includes_godlint_policy() {
+    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+    let request =
+        GenerationRequest::new(fixture("minimal-3.1.yaml"), output.path().join("generated"));
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+
+    let godlint = std::fs::read_to_string(request.output_path().join("godlint.yaml"))
+        .unwrap_or_else(|error| panic!("generated Godlint config is readable: {error}"));
+    assert!(godlint.contains("suites: [recommended@1]"));
+    assert!(godlint.contains("sdk/typescript/native/target/**"));
+    assert!(godlint.contains("sdk/typescript/node_modules/**"));
+}
+
+#[test]
 fn generated_client_calls_a_real_mock_server() {
     let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
     let request =

@@ -94,7 +94,22 @@ fn generated_typed_fixture_contains_rust_models_and_typed_response() {
             .unwrap_or_else(|error| panic!("generated client is readable: {error}"));
     assert!(models.contains("pub struct Document"));
     assert!(problem.contains("pub struct Problem"));
-    assert!(client.contains("Result<Document, SdkError>"));
+    assert!(client.contains("Result<Document, CreateDocumentError>"));
+}
+
+#[test]
+fn generated_operations_decode_declared_api_errors() {
+    let (_output, request) = generated_fixture("parameters-and-errors-3.1.yaml");
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+
+    let client =
+        std::fs::read_to_string(request.output_path().join("sdk/rust/src/operations/mod.rs"))
+            .unwrap_or_else(|error| panic!("generated operations are readable: {error}"));
+    assert!(client.contains("pub enum CreateDocumentError"));
+    assert!(client.contains("Status400(Problem)"));
+    assert!(client.contains("Status404"));
+    assert!(client.contains("Result<Document, CreateDocumentError>"));
+    assert!(client.contains("HttpResponse"));
 }
 
 #[test]

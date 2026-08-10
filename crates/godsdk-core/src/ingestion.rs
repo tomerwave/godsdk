@@ -21,7 +21,7 @@ pub enum IngestionError {
     Read { path: PathBuf, message: String },
     #[error("could not parse OpenAPI document: {0}")]
     Parse(String),
-    #[error("unsupported OpenAPI version {0}; expected 3.1.x")]
+    #[error("unsupported OpenAPI version {0}; expected 3.0.x or 3.1.x")]
     UnsupportedVersion(String),
     #[error("could not resolve external reference {reference}: {message}")]
     ExternalReference { reference: String, message: String },
@@ -148,7 +148,7 @@ fn normalize_raw_document(raw: RawDocument) -> Result<ApiIr, IngestionError> {
 }
 
 fn validate_openapi_version(version: &str) -> Result<(), IngestionError> {
-    if version.starts_with("3.1.") {
+    if version.starts_with("3.0.") || version.starts_with("3.1.") {
         Ok(())
     } else {
         Err(IngestionError::UnsupportedVersion(version.to_string()))

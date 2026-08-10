@@ -55,6 +55,22 @@ fn generates_a_compiling_rust_repository_skeleton() {
 }
 
 #[test]
+fn generates_a_repository_from_openapi_30() {
+    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+    let request =
+        GenerationRequest::new(fixture("minimal-3.0.yaml"), output.path().join("generated"));
+
+    generate(&request).unwrap_or_else(|error| panic!("OpenAPI 3.0 generation succeeds: {error}"));
+    assert!(request.output_path().join("sdk/rust/src/lib.rs").is_file());
+    assert!(
+        request
+            .output_path()
+            .join("sdk/typescript/src/index.ts")
+            .is_file()
+    );
+}
+
+#[test]
 fn generated_client_calls_a_real_mock_server() {
     let (_output, request) = generated_fixture("minimal-3.1.yaml");
     match generate(&request) {

@@ -102,7 +102,11 @@ fn typed_schema(
     path: &str,
 ) -> Result<Schema, crate::IngestionError> {
     let types = schema_types(object);
-    let nullable = types.iter().any(|value| value == "null");
+    let nullable = types.iter().any(|value| value == "null")
+        || object
+            .get("nullable")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
     let type_name = types.iter().find(|value| value.as_str() != "null");
     let schema = match type_name.map(String::as_str) {
         Some("string") => scalar_schema(object, |format| Schema::String { format }),

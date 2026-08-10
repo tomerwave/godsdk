@@ -108,6 +108,8 @@ enum RawParameter {
         location: String,
         #[serde(default)]
         required: bool,
+        #[serde(default)]
+        schema: Option<serde_json::Value>,
     },
     Reference {
         #[serde(rename = "$ref")]
@@ -420,10 +422,16 @@ fn normalize_parameters(
                 name,
                 location,
                 required,
+                schema,
             } => parameters.push(Parameter {
                 name: name.clone(),
                 location: parse_parameter_location(location, path)?,
                 required: *required,
+                schema: schema
+                    .as_ref()
+                    .map(|value| schema_from_value(value, &format!("{path}.parameter.{name}")))
+                    .transpose()?
+                    .unwrap_or(Schema::String { format: None }),
             }),
             RawParameter::Reference { reference } => {
                 references.insert(reference.clone());

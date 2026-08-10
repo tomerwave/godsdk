@@ -2,21 +2,16 @@ use proc_macro2::Span;
 use quote::{format_ident, quote};
 use syn::{LitByteStr, LitStr};
 
-use crate::{ApiIr, ParameterLocation, SecuritySchemeKind};
+use crate::{ApiIr, ParameterLocation, Schema, SecuritySchemeKind};
 
-use super::mock_sample::{marker, success_body};
+use super::mock_sample::{marker, request_body, success_body};
 use super::rust_identifier;
 
 pub(crate) fn render(spec: &ApiIr) -> String {
     let operation = &spec.operations[0];
     let package = format_ident!("{}", format!("{}_sdk", slug(&spec.title).replace('-', "_")));
     let method = format_ident!("{}", rust_identifier(&operation.operation_id));
-    let arguments = operation
-        .parameters
-        .iter()
-        .filter(|parameter| parameter.location == ParameterLocation::Path)
-        .map(|_| quote! { "pet-1" })
-        .collect::<Vec<_>>();
+    let (arguments, request_setup) = mock_inputs(spec, operation, &package);
     let success_body = success_body(spec, operation);
     let literals = MockLiterals {
         method_path: LitStr::new(&render_method_path(&operation.path), Span::call_site()),
@@ -28,6 +23,7 @@ pub(crate) fn render(spec: &ApiIr) -> String {
         package: &package,
         method: &method,
         arguments: &arguments,
+        request_setup: &request_setup,
         auth: &auth.builder,
     };
     let imports = main_imports();
@@ -48,6 +44,59 @@ pub(crate) fn render(spec: &ApiIr) -> String {
     prettyplease::unparse(&file)
 }
 
+fn mock_inputs(
+    spec: &ApiIr,
+    operation: &crate::Operation,
+    package: &syn::Ident,
+) -> (Vec<proc_macro2::TokenStream>, proc_macro2::TokenStream) {
+    let mut arguments = operation
+        .parameters
+        .iter()
+        .map(mock_parameter_argument)
+        .collect::<Vec<_>>();
+    let request_setup = mock_body_input(spec, operation, package, &mut arguments);
+    (arguments, request_setup)
+}
+
+fn mock_parameter_argument(parameter: &crate::Parameter) -> proc_macro2::TokenStream {
+    match parameter.location {
+        ParameterLocation::Path => quote! { "pet-1" },
+        _ if parameter.required => sample_parameter(&parameter.schema),
+        _ => quote! { None },
+    }
+}
+
+fn mock_body_input(
+    spec: &ApiIr,
+    operation: &crate::Operation,
+    package: &syn::Ident,
+    arguments: &mut Vec<proc_macro2::TokenStream>,
+) -> proc_macro2::TokenStream {
+    let Some(body) = operation.request_body_details.as_ref() else {
+        return quote! {};
+    };
+    if !body.required {
+        arguments.push(quote! { None });
+        return quote! {};
+    }
+    let body_type = body
+        .schema
+        .as_ref()
+        .map(|schema| schema_type_name(schema, package))
+        .unwrap_or_else(|| "serde_json::Value".to_string());
+    let body_type: syn::Type = syn::parse_str(&body_type)
+        .unwrap_or_else(|error| panic!("mock request body type is valid: {error}"));
+    let body_literal = LitStr::new(
+        &String::from_utf8_lossy(&request_body(spec, operation)),
+        Span::call_site(),
+    );
+    arguments.push(quote! { &request_body });
+    quote! {
+        let request_body: #body_type = serde_json::from_str(#body_literal)
+            .unwrap_or_else(|error| panic!("request body fixture: {error}"));
+    }
+}
+
 struct MockLiterals {
     method_path: LitStr,
     success: LitByteStr,
@@ -63,6 +112,7 @@ struct MockContext<'a> {
     package: &'a syn::Ident,
     method: &'a syn::Ident,
     arguments: &'a [proc_macro2::TokenStream],
+    request_setup: &'a proc_macro2::TokenStream,
     auth: &'a proc_macro2::TokenStream,
 }
 
@@ -158,9 +208,35 @@ fn main_imports() -> proc_macro2::TokenStream {
     }
 }
 
+fn sample_parameter(schema: &Schema) -> proc_macro2::TokenStream {
+    match schema {
+        Schema::Boolean => quote! { true },
+        Schema::Integer { .. } => quote! { 1_i64 },
+        Schema::Number { .. } => quote! { 1.0_f64 },
+        _ => quote! { "example".to_string() },
+    }
+}
+
+fn schema_type_name(schema: &Schema, package: &syn::Ident) -> String {
+    match schema {
+        Schema::Reference(name) => format!("{package}::{}", super::rust_type_name(name)),
+        Schema::String { .. } => "String".to_string(),
+        Schema::Integer { .. } => "i64".to_string(),
+        Schema::Number { .. } => "f64".to_string(),
+        Schema::Boolean => "bool".to_string(),
+        Schema::Array(item) => format!("Vec<{}>", schema_type_name(item, package)),
+        _ => "serde_json::Value".to_string(),
+    }
+}
+
 fn main_test(context: &MockContext<'_>, literals: &MockLiterals) -> proc_macro2::TokenStream {
     let server = main_server(&literals.method_path, &literals.success, context.auth);
-    let call = main_call(context.method, context.arguments, &literals.success_marker);
+    let call = main_call(
+        context.method,
+        context.arguments,
+        context.request_setup,
+        &literals.success_marker,
+    );
     let package = context.package;
     quote! {
         use #package::Client;
@@ -209,9 +285,11 @@ fn main_server(
 fn main_call(
     method: &syn::Ident,
     arguments: &[proc_macro2::TokenStream],
+    request_setup: &proc_macro2::TokenStream,
     marker: &LitStr,
 ) -> proc_macro2::TokenStream {
     quote! {
+        #request_setup
         let response = client.#method(#(#arguments),*)
             .await
             .unwrap_or_else(|error| panic!("client request: {error}"));
@@ -285,6 +363,7 @@ fn retry_server(success: &LitByteStr, assertion: &LitStr) -> proc_macro2::TokenS
 fn retry_call(context: &MockContext<'_>, marker: &LitStr) -> proc_macro2::TokenStream {
     let method = context.method;
     let arguments = context.arguments;
+    let request_setup = context.request_setup;
     let auth = context.auth;
     quote! {
         let policy = RetryPolicy {
@@ -292,7 +371,7 @@ fn retry_call(context: &MockContext<'_>, marker: &LitStr) -> proc_macro2::TokenS
             initial_backoff: Duration::from_millis(1),
             max_backoff: Duration::from_millis(5),
             retry_statuses: vec![503],
-            retry_non_idempotent: false,
+            retry_non_idempotent: true,
         };
         let (base_url, server) = spawn_retry_server();
         let client = Client::builder(base_url)
@@ -300,6 +379,7 @@ fn retry_call(context: &MockContext<'_>, marker: &LitStr) -> proc_macro2::TokenS
             .retry_policy(policy)
             .build()
             .unwrap_or_else(|error| panic!("client: {error}"));
+        #request_setup
         let response = client.#method(#(#arguments),*)
             .await
             .unwrap_or_else(|error| panic!("retry request: {error}"));

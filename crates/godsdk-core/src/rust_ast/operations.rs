@@ -3,6 +3,7 @@ use quote::{format_ident, quote};
 
 use crate::{ApiIr, HttpMethod, Operation, ParameterLocation, Schema, SecuritySchemeKind};
 
+use super::request::{OperationBodyInput, operation_arguments, operation_body};
 use super::{literal, rust_identifier, rust_type_name};
 
 pub(super) fn render(spec: &ApiIr) -> TokenStream {
@@ -28,7 +29,7 @@ pub(super) fn render(spec: &ApiIr) -> TokenStream {
     quote! {
         use reqwest::Method;
 
-        use crate::client::{#auth_import #response_import Client, SdkError};
+        use crate::client::{#auth_import #response_import Client, RequestOptions, SdkError};
         use crate::models::*;
 
         #(#errors)*
@@ -60,7 +61,7 @@ fn has_security(spec: &ApiIr) -> bool {
 
 fn render_operation(operation: &Operation, spec: &ApiIr) -> TokenStream {
     let method = format_ident!("{}", rust_identifier(&operation.operation_id));
-    let (arguments, path_arguments) = operation_arguments(operation);
+    let (arguments, path_arguments, request_parts) = operation_arguments(operation, spec);
     let path = operation_path(operation, &path_arguments);
     let response_type = response_type(operation);
     let security = operation_security(operation, spec);
@@ -68,7 +69,15 @@ fn render_operation(operation: &Operation, spec: &ApiIr) -> TokenStream {
     let return_type = error_type
         .as_ref()
         .map_or_else(|| quote! { SdkError }, |error_type| quote! { #error_type });
-    let body = operation_body(operation, &response_type, error_type.as_ref(), security);
+    let body = operation_body(
+        operation,
+        &response_type,
+        error_type.as_ref(),
+        OperationBodyInput {
+            security,
+            request_parts,
+        },
+    );
     quote! {
         pub async fn #method(&self, #(#arguments),*) -> Result<#response_type, #return_type> {
             #path
@@ -77,49 +86,11 @@ fn render_operation(operation: &Operation, spec: &ApiIr) -> TokenStream {
     }
 }
 
-fn operation_body(
-    operation: &Operation,
-    response_type: &TokenStream,
-    error_type: Option<&proc_macro2::Ident>,
-    security: TokenStream,
-) -> TokenStream {
-    let decode = response_decode(operation, response_type, error_type);
-    let http_method = method_tokens(operation.method);
-    let call = quote! { self.request(Method::#http_method, &path, #security).await? };
-    let success = quote! {
-        let body = response.body;
-        #decode
-    };
-    match error_type {
-        Some(error_type) => {
-            let decoder = error_decoder_name(operation);
-            quote! {
-                let response = self.request(Method::#http_method, &path, #security)
-                    .await
-                    .map_err(#error_type::Transport)?;
-                if (200..300).contains(&response.status) {
-                    #success
-                } else {
-                    Err(#decoder(response))
-                }
-            }
-        }
-        None => quote! {
-            let response = #call;
-            if (200..300).contains(&response.status) {
-                #success
-            } else {
-                Err(SdkError::Http { status: response.status, body: response.body })
-            }
-        },
-    }
-}
-
 fn error_type_name(operation: &Operation) -> proc_macro2::Ident {
     format_ident!("{}Error", rust_type_name(&operation.operation_id))
 }
 
-fn error_decoder_name(operation: &Operation) -> proc_macro2::Ident {
+pub(super) fn error_decoder_name(operation: &Operation) -> proc_macro2::Ident {
     format_ident!("decode_{}_error", rust_identifier(&operation.operation_id))
 }
 
@@ -272,21 +243,6 @@ fn render_security_kind(name: &str, kind: &SecuritySchemeKind) -> TokenStream {
     }
 }
 
-fn operation_arguments(operation: &Operation) -> (Vec<TokenStream>, Vec<TokenStream>) {
-    let parameters = operation
-        .parameters
-        .iter()
-        .filter(|parameter| parameter.location == ParameterLocation::Path);
-    let mut arguments = Vec::new();
-    let mut path_arguments = Vec::new();
-    for parameter in parameters {
-        let name = format_ident!("{}", rust_identifier(&parameter.name));
-        arguments.push(quote! { #name: &str });
-        path_arguments.push(quote! { crate::client::encode_path_segment(#name) });
-    }
-    (arguments, path_arguments)
-}
-
 fn operation_path(operation: &Operation, path_arguments: &[TokenStream]) -> TokenStream {
     let (path_format, has_arguments) = path_template(operation);
     let path_literal = literal(&path_format);
@@ -297,7 +253,7 @@ fn operation_path(operation: &Operation, path_arguments: &[TokenStream]) -> Toke
     }
 }
 
-fn response_decode(
+pub(super) fn response_decode(
     operation: &Operation,
     response_type: &TokenStream,
     error_type: Option<&proc_macro2::Ident>,
@@ -327,7 +283,7 @@ fn path_template(operation: &Operation) -> (String, bool) {
     (path, has_arguments)
 }
 
-fn method_tokens(method: HttpMethod) -> proc_macro2::Ident {
+pub(super) fn method_tokens(method: HttpMethod) -> proc_macro2::Ident {
     format_ident!(
         "{}",
         match method {

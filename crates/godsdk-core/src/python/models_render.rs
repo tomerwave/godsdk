@@ -1,5 +1,5 @@
 use super::{
-    ApiIr, Schema, inline_success_schema, operation_response_name, python_identifier,
+    ApiIr, Operation, Schema, inline_success_schema, operation_response_name, python_identifier,
     schema_model_name, type_identifier,
 };
 use crate::code_writer::CodeWriter;
@@ -26,8 +26,27 @@ pub(super) fn render_models(spec: &ApiIr) -> String {
                 spec,
             ));
         }
+        if let Some(schema) = inline_request_schema(operation) {
+            lines.extend(model_lines(
+                &operation_request_name(operation),
+                schema,
+                spec,
+            ));
+        }
     }
     CodeWriter::from_lines(lines)
+}
+
+fn inline_request_schema(operation: &Operation) -> Option<&Schema> {
+    operation
+        .request_body_details
+        .as_ref()
+        .and_then(|body| body.schema.as_ref())
+        .filter(|schema| schema_model_name(schema).is_none())
+}
+
+fn operation_request_name(operation: &Operation) -> String {
+    format!("{}Request", type_identifier(&operation.operation_id))
 }
 
 fn model_lines(name: &str, schema: &Schema, spec: &ApiIr) -> Vec<String> {

@@ -10,6 +10,7 @@ mod mock;
 mod mock_sample;
 mod models;
 mod operations;
+mod request;
 mod transport;
 
 pub(crate) fn render_files(spec: &ApiIr) -> Vec<(String, String)> {
@@ -28,6 +29,7 @@ pub(crate) fn render_files(spec: &ApiIr) -> Vec<(String, String)> {
 }
 
 pub(crate) use mock::render as render_mock_test;
+pub(crate) use mock_sample::request_body as mock_request_body;
 pub(crate) use mock_sample::success_body as mock_success_body;
 
 fn rust_file(path: &str, tokens: TokenStream) -> (String, String) {
@@ -82,6 +84,11 @@ pub(crate) fn rust_identifier(value: &str) -> String {
             '_'
         });
     }
+    result = result
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
     if result
         .chars()
         .next()

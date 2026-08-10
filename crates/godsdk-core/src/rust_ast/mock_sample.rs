@@ -17,6 +17,20 @@ pub(crate) fn success_body(spec: &ApiIr, operation: &Operation) -> Vec<u8> {
     serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec())
 }
 
+pub(crate) fn request_body(spec: &ApiIr, operation: &Operation) -> Vec<u8> {
+    operation
+        .request_body_details
+        .as_ref()
+        .and_then(|body| body.schema.as_ref())
+        .map_or_else(
+            || b"null".to_vec(),
+            |schema| {
+                serde_json::to_vec(&sample_schema(schema, spec, 0))
+                    .unwrap_or_else(|_| b"null".to_vec())
+            },
+        )
+}
+
 pub(super) fn marker(body: &[u8]) -> String {
     serde_json::from_slice::<Value>(body)
         .ok()

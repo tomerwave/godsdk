@@ -4,6 +4,7 @@ use std::process::Command;
 
 use serde::Deserialize;
 
+use super::python::render_python_files;
 use super::typescript::render_typescript_files;
 use super::{
     ApiIr, GenerationError, GenerationMode, GenerationRequest, GenerationResult, IngestionError,
@@ -215,8 +216,32 @@ fn write_source_and_rust(
 ) -> Result<(), GenerationError> {
     write_source_file(root, source, output.files)?;
     write_rust_files(root, spec, output.files)?;
-    if output.targets.contains(&Target::TypeScript) {
-        write_typescript_files(root, spec, output.files)?;
+    write_binding_files(root, spec, output.targets, output.files)?;
+    Ok(())
+}
+
+fn write_binding_files(
+    root: &Path,
+    spec: &ApiIr,
+    targets: &[Target],
+    generated: &mut Vec<PathBuf>,
+) -> Result<(), GenerationError> {
+    if targets.contains(&Target::TypeScript) {
+        write_typescript_files(root, spec, generated)?;
+    }
+    if targets.contains(&Target::Python) {
+        write_python_files(root, spec, generated)?;
+    }
+    Ok(())
+}
+
+fn write_python_files(
+    root: &Path,
+    spec: &ApiIr,
+    generated: &mut Vec<PathBuf>,
+) -> Result<(), GenerationError> {
+    for (path, contents) in render_python_files(spec) {
+        write_file(root, &path, &contents, generated)?;
     }
     Ok(())
 }
@@ -324,13 +349,21 @@ fn generate_lockfile(
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
     generate_lockfile_at(root, "sdk/rust", "sdk/rust/Cargo.lock", generated)?;
-    if targets.contains(&Target::TypeScript) {
-        generate_lockfile_at(
-            root,
+    for (target, directory, lockfile) in [
+        (
+            Target::TypeScript,
             "sdk/typescript/native",
             "sdk/typescript/native/Cargo.lock",
-            generated,
-        )?;
+        ),
+        (
+            Target::Python,
+            "sdk/python/native",
+            "sdk/python/native/Cargo.lock",
+        ),
+    ] {
+        if targets.contains(&target) {
+            generate_lockfile_at(root, directory, lockfile, generated)?;
+        }
     }
     Ok(())
 }

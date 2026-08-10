@@ -3,6 +3,7 @@ mod identifiers;
 #[path = "typescript/schemas.rs"]
 mod schemas;
 
+use super::code_writer::CodeWriter;
 use super::{ApiIr, Operation};
 use identifiers::{slug, ts_identifier};
 use schemas::{
@@ -44,20 +45,47 @@ pub(crate) fn render_typescript_files(spec: &ApiIr) -> Vec<(&'static str, String
 }
 
 fn render_package(spec: &ApiIr) -> String {
-    format!(
-        "{{\n  \"name\": \"{}-sdk\",\n  \"version\": \"0.1.0\",\n  \"type\": \"module\",\n  \"main\": \"./dist/index.js\",\n  \"exports\": {{\".\": \"./dist/index.js\"}},\n  \"scripts\": {{\"build\": \"tsc --noEmit\", \"build:native\": \"napi build --manifest-path native/Cargo.toml --platform --release\", \"test\": \"vitest run\", \"test:native\": \"npm run build:native && npm test\", \"prepublishOnly\": \"napi prepublish -t npm --no-gh-release\"}},\n  \"napi\": {{\"binaryName\": \"{}-sdk\", \"packageName\": \"{}-sdk\", \"targets\": [\"x86_64-unknown-linux-gnu\", \"x86_64-unknown-linux-musl\", \"aarch64-unknown-linux-gnu\", \"aarch64-unknown-linux-musl\", \"x86_64-apple-darwin\", \"aarch64-apple-darwin\", \"x86_64-pc-windows-msvc\"]}},\n  \"dependencies\": {{\"zod\": \"^4.4.3\"}},\n  \"devDependencies\": {{\"@napi-rs/cli\": \"^3.8.3\", \"@types/node\": \"^22.0.0\", \"tsx\": \"^4.20.3\", \"typescript\": \"^5.0.0\", \"vitest\": \"^3.0.0\"}}\n}}\n",
-        slug(&spec.title),
-        slug(&spec.title),
-        slug(&spec.title),
-    )
+    let package = slug(&spec.title);
+    CodeWriter::from_lines(package_lines(&package))
+}
+
+fn package_lines(package: &str) -> Vec<String> {
+    vec![
+        "{".to_string(),
+        format!("  \"name\": \"{package}-sdk\","),
+        "  \"version\": \"0.1.0\",".to_string(),
+        "  \"type\": \"module\",".to_string(),
+        "  \"main\": \"./dist/index.js\",".to_string(),
+        "  \"exports\": {\".\": \"./dist/index.js\"},".to_string(),
+        "  \"scripts\": {\"build\": \"tsc --noEmit\", \"build:native\": \"napi build --manifest-path native/Cargo.toml --platform --release\", \"test\": \"vitest run\", \"test:native\": \"npm run build:native && npm test\", \"prepublishOnly\": \"napi prepublish -t npm --no-gh-release\"},".to_string(),
+        format!("  \"napi\": {{\"binaryName\": \"{package}-sdk\", \"packageName\": \"{package}-sdk\", \"targets\": [\"x86_64-unknown-linux-gnu\", \"x86_64-unknown-linux-musl\", \"aarch64-unknown-linux-gnu\", \"aarch64-unknown-linux-musl\", \"x86_64-apple-darwin\", \"aarch64-apple-darwin\", \"x86_64-pc-windows-msvc\"]}},"),
+        "  \"dependencies\": {\"zod\": \"^4.4.3\"},".to_string(),
+        "  \"devDependencies\": {\"@napi-rs/cli\": \"^3.8.3\", \"@types/node\": \"^22.0.0\", \"tsx\": \"^4.20.3\", \"typescript\": \"^5.0.0\", \"vitest\": \"^3.0.0\"}".to_string(),
+        "}".to_string(),
+    ]
 }
 
 fn render_tsconfig() -> String {
-    "{\n  \"compilerOptions\": {\n    \"target\": \"ES2022\",\n    \"module\": \"NodeNext\",\n    \"moduleResolution\": \"NodeNext\",\n    \"strict\": true,\n    \"declaration\": true,\n    \"noUncheckedIndexedAccess\": true,\n    \"exactOptionalPropertyTypes\": true,\n    \"noImplicitOverride\": true,\n    \"outDir\": \"dist\"\n  },\n  \"include\": [\"src/**/*.ts\", \"tests/**/*.ts\"]\n}\n".to_string()
+    CodeWriter::from_lines([
+        "{",
+        "  \"compilerOptions\": {",
+        "    \"target\": \"ES2022\",",
+        "    \"module\": \"NodeNext\",",
+        "    \"moduleResolution\": \"NodeNext\",",
+        "    \"strict\": true,",
+        "    \"declaration\": true,",
+        "    \"noUncheckedIndexedAccess\": true,",
+        "    \"exactOptionalPropertyTypes\": true,",
+        "    \"noImplicitOverride\": true,",
+        "    \"outDir\": \"dist\"",
+        "  },",
+        "  \"include\": [\"src/**/*.ts\", \"tests/**/*.ts\"]",
+        "}",
+    ])
 }
 
 fn render_errors(spec: &ApiIr) -> String {
-    let mut imports = spec
+    let imports = spec
         .schemas
         .keys()
         .filter(|name| spec.operations.iter().any(|operation| {
@@ -67,18 +95,54 @@ fn render_errors(spec: &ApiIr) -> String {
                 .filter(|response| !response.status.starts_with('2'))
                 .any(|response| matches!(response.schema, Some(super::Schema::Reference(ref reference)) if reference == *name))
         }))
-        .map(|name| format!("import type {{ {name} }} from \"./types.js\";\nimport {{ {name}Schema }} from \"./schemas.js\";\n"))
-        .collect::<String>();
-    imports.push_str("import type { NativeValue } from \"./native.js\";\n");
+        .collect::<Vec<_>>();
     let contracts = spec
         .operations
         .iter()
         .filter(|operation| has_error_responses(operation))
         .map(render_error_contract)
         .collect::<String>();
-    format!(
-        "{imports}\nexport type NativeResult = {{ ok: true; value: NativeValue }} | {{ ok: false; status: number; body: NativeValue }};\n\nexport class SdkValidationError extends Error {{\n  readonly operation: string;\n  readonly model: string;\n\n  constructor(operation: string, model: string) {{\n    super(`Response validation failed for ${{operation}} (${{model}})`);\n    this.name = \"SdkValidationError\";\n    this.operation = operation;\n    this.model = model;\n  }}\n}}\n\nexport class SdkHttpError extends Error {{\n  readonly status: number;\n  readonly body: NativeValue;\n\n  constructor(status: number, body: NativeValue) {{\n    super(`API returned HTTP ${{status}}`);\n    this.name = \"SdkHttpError\";\n    this.status = status;\n    this.body = body;\n  }}\n}}\n\n{contracts}"
-    )
+    CodeWriter::from_lines(error_file_lines(&imports, &contracts))
+}
+
+fn error_file_lines(imports: &[&String], contracts: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    for name in imports {
+        lines.push(format!("import type {{ {name} }} from \"./types.js\";"));
+        lines.push(format!("import {{ {name}Schema }} from \"./schemas.js\";"));
+    }
+    lines.extend([
+        "import type { NativeValue } from \"./native.js\";".to_string(),
+        String::new(),
+        "export type NativeResult = { ok: true; value: NativeValue } | { ok: false; status: number; body: NativeValue };".to_string(),
+        String::new(),
+        "export class SdkValidationError extends Error {".to_string(),
+        "  readonly operation: string;".to_string(),
+        "  readonly model: string;".to_string(),
+        String::new(),
+        "  constructor(operation: string, model: string) {".to_string(),
+        "    super(`Response validation failed for ${operation} (${model})`);".to_string(),
+        "    this.name = \"SdkValidationError\";".to_string(),
+        "    this.operation = operation;".to_string(),
+        "    this.model = model;".to_string(),
+        "  }".to_string(),
+        "}".to_string(),
+        String::new(),
+        "export class SdkHttpError extends Error {".to_string(),
+        "  readonly status: number;".to_string(),
+        "  readonly body: NativeValue;".to_string(),
+        String::new(),
+        "  constructor(status: number, body: NativeValue) {".to_string(),
+        "    super(`API returned HTTP ${status}`);".to_string(),
+        "    this.name = \"SdkHttpError\";".to_string(),
+        "    this.status = status;".to_string(),
+        "    this.body = body;".to_string(),
+        "  }".to_string(),
+        "}".to_string(),
+        String::new(),
+    ]);
+    lines.extend(contracts.trim_end().lines().map(str::to_string));
+    lines
 }
 
 fn has_error_responses(operation: &Operation) -> bool {
@@ -102,11 +166,20 @@ fn render_error_contract(operation: &Operation) -> String {
                 .as_ref()
                 .and_then(schema_model_name)
                 .unwrap_or_else(|| "NativeValue".to_string());
-            Some(format!(
-                "export class {operation_name}Status{status}Error extends {name} {{\n  readonly typedBody: {body_type};\n\n  constructor(status: number, body: {body_type}) {{\n    super(status, body);\n    this.typedBody = body;\n  }}\n}}\n"
-            ))
+            Some(vec![
+                format!("export class {operation_name}Status{status}Error extends {name} {{"),
+                format!("  readonly typedBody: {body_type};"),
+                String::new(),
+                format!("  constructor(status: number, body: {body_type}) {{"),
+                "    super(status, body);".to_string(),
+                "    this.typedBody = body;".to_string(),
+                "  }".to_string(),
+                "}".to_string(),
+                String::new(),
+            ])
         })
-        .collect::<String>();
+        .flatten()
+        .collect::<Vec<_>>();
     let arms = operation
         .responses
         .iter()
@@ -120,12 +193,28 @@ fn render_error_contract(operation: &Operation) -> String {
                 .map_or_else(|| format!("new {operation_name}Status{status}Error({status}, result.body)"), |model| {
                     format!("new {operation_name}Status{status}Error({status}, {model}Schema.parse(result.body))")
                 });
-            Some(format!("      case {status}: return {constructor};\n"))
+            Some(format!("      case {status}: return {constructor};"))
         })
-        .collect::<String>();
-    format!(
-        "export class {name} extends SdkHttpError {{\n  static from(result: {{ status: number; body: NativeValue }}): {name} {{\n    switch (result.status) {{\n{arms}      default: return new {name}(result.status, result.body);\n    }}\n  }}\n}}\n\n{variants}"
-    )
+        .collect::<Vec<_>>();
+    CodeWriter::from_lines(error_contract_lines(&name, &arms, &variants))
+}
+
+fn error_contract_lines(name: &str, arms: &[String], variants: &[String]) -> Vec<String> {
+    let mut lines = vec![
+        format!("export class {name} extends SdkHttpError {{"),
+        format!("  static from(result: {{ status: number; body: NativeValue }}): {name} {{"),
+        "    switch (result.status) {".to_string(),
+    ];
+    lines.extend(arms.iter().cloned());
+    lines.extend([
+        format!("      default: return new {name}(result.status, result.body);"),
+        "    }".to_string(),
+        "  }".to_string(),
+        "}".to_string(),
+        String::new(),
+    ]);
+    lines.extend(variants.iter().cloned());
+    lines
 }
 
 fn type_identifier(value: &str) -> String {

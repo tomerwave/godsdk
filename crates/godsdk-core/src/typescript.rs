@@ -8,6 +8,10 @@ pub(crate) fn render_typescript_files(spec: &ApiSpec) -> Vec<(&'static str, Stri
         ("sdk/typescript/src/types.ts", render_types(spec)),
         ("sdk/typescript/src/errors.ts", render_errors()),
         ("sdk/typescript/src/native.ts", render_native_loader(spec)),
+        (
+            "sdk/typescript/native/index.d.ts",
+            render_native_declaration(spec),
+        ),
         ("sdk/typescript/src/index.ts", render_index(spec)),
         (
             "sdk/typescript/tests/validation.test.ts",
@@ -32,7 +36,7 @@ pub(crate) fn render_typescript_files(spec: &ApiSpec) -> Vec<(&'static str, Stri
 
 fn render_package(spec: &ApiSpec) -> String {
     format!(
-        "{{\n  \"name\": \"{}-sdk\",\n  \"version\": \"0.1.0\",\n  \"type\": \"module\",\n  \"main\": \"./dist/index.js\",\n  \"exports\": {{\".\": \"./dist/index.js\"}},\n  \"scripts\": {{\"build\": \"tsc --noEmit\", \"build:native\": \"napi build --manifest-path native/Cargo.toml --platform --release\", \"test\": \"vitest run\", \"test:native\": \"npm run build:native && npm test\"}},\n  \"napi\": {{\"binaryName\": \"{}-sdk\", \"packageName\": \"{}-sdk\", \"targets\": [\"x86_64-unknown-linux-gnu\", \"x86_64-unknown-linux-musl\", \"aarch64-unknown-linux-gnu\", \"aarch64-unknown-linux-musl\", \"x86_64-apple-darwin\", \"aarch64-apple-darwin\", \"x86_64-pc-windows-msvc\"]}},\n  \"dependencies\": {{\"zod\": \"^4.4.3\"}},\n  \"devDependencies\": {{\"@napi-rs/cli\": \"^3.8.3\", \"@types/node\": \"^22.0.0\", \"typescript\": \"^5.0.0\", \"vitest\": \"^3.0.0\"}}\n}}\n",
+        "{{\n  \"name\": \"{}-sdk\",\n  \"version\": \"0.1.0\",\n  \"type\": \"module\",\n  \"main\": \"./dist/index.js\",\n  \"exports\": {{\".\": \"./dist/index.js\"}},\n  \"scripts\": {{\"build\": \"tsc --noEmit\", \"build:native\": \"napi build --manifest-path native/Cargo.toml --platform --release\", \"test\": \"vitest run\", \"test:native\": \"npm run build:native && npm test\", \"prepublishOnly\": \"napi prepublish -t npm --no-gh-release\"}},\n  \"napi\": {{\"binaryName\": \"{}-sdk\", \"packageName\": \"{}-sdk\", \"targets\": [\"x86_64-unknown-linux-gnu\", \"x86_64-unknown-linux-musl\", \"aarch64-unknown-linux-gnu\", \"aarch64-unknown-linux-musl\", \"x86_64-apple-darwin\", \"aarch64-apple-darwin\", \"x86_64-pc-windows-msvc\"]}},\n  \"dependencies\": {{\"zod\": \"^4.4.3\"}},\n  \"devDependencies\": {{\"@napi-rs/cli\": \"^3.8.3\", \"@types/node\": \"^22.0.0\", \"tsx\": \"^4.8.1\", \"typescript\": \"^5.0.0\", \"vitest\": \"^3.0.0\"}}\n}}\n",
         slug(&spec.title),
         slug(&spec.title),
         slug(&spec.title),
@@ -113,7 +117,30 @@ fn render_native_loader(spec: &ApiSpec) -> String {
         })
         .collect::<String>();
     format!(
-        "import {{ createRequire }} from \"node:module\";\n\nexport type NativeValue = null | boolean | number | string | NativeValue[] | {{ [key: string]: NativeValue }};\n\nexport interface NativeClient {{\n{methods}}}\n\ninterface NativeBinding {{\n  NativeClient: new (baseUrl: string) => NativeClient;\n}}\n\nexport function loadNative(baseUrl: string): NativeClient {{\n  const require = createRequire(import.meta.url);\n  const binding = require(\"../native/index.js\") as NativeBinding;\n  return new binding.NativeClient(baseUrl);\n}}\n"
+        "import binding from \"../native/index.js\";\n\nexport type NativeValue = null | boolean | number | string | NativeValue[] | {{ [key: string]: NativeValue }};\n\nexport interface NativeClient {{\n{methods}}}\n\ninterface NativeBinding {{\n  NativeClient: new (baseUrl: string) => NativeClient;\n}}\n\nconst nativeBinding = binding as NativeBinding;\n\nexport function loadNative(baseUrl: string): NativeClient {{\n  return new nativeBinding.NativeClient(baseUrl);\n}}\n"
+    )
+}
+
+fn render_native_declaration(spec: &ApiSpec) -> String {
+    let methods = spec
+        .operations
+        .iter()
+        .map(|operation| {
+            format!(
+                "  {}({}): Promise<NativeValue>;\n",
+                ts_identifier(&operation.operation_id),
+                operation
+                    .parameters
+                    .iter()
+                    .filter(|parameter| parameter.location == super::ParameterLocation::Path)
+                    .map(|parameter| format!("{}: string", ts_identifier(&parameter.name)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+        .collect::<String>();
+    format!(
+        "export type NativeValue = null | boolean | number | string | NativeValue[] | {{ [key: string]: NativeValue }};\n\nexport declare class NativeClient {{\n{methods}}}\n\ndeclare const binding: {{ NativeClient: typeof NativeClient }};\nexport default binding;\n"
     )
 }
 

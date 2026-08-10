@@ -1,0 +1,13 @@
+mod auth;
+mod builder;
+mod error;
+mod retry;
+mod transport;
+
+pub use builder::{Client, ClientBuilder};
+pub use error::SdkError;
+pub use retry::RetryPolicy;
+
+pub(crate) use auth::{Auth, apply_auth};
+pub(crate) use retry::{is_idempotent, parse_retry_after, should_retry_status, sleep_before_retry};
+pub(crate) use transport::encode_path_segment;

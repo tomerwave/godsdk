@@ -1,0 +1,20 @@
+#[derive(Clone, Debug)]
+pub(crate) enum Auth {
+    None,
+    Bearer(String),
+    Header(String, String),
+    Query(String, String),
+    Basic(String, Option<String>),
+}
+
+pub(crate) fn apply_auth(
+    request: reqwest::RequestBuilder,
+    auth: &Auth,
+) -> reqwest::RequestBuilder {
+    match auth {
+        Auth::None | Auth::Query(_, _) => request,
+        Auth::Bearer(token) => request.bearer_auth(token),
+        Auth::Header(name, value) => request.header(name, value),
+        Auth::Basic(username, password) => request.basic_auth(username, password.as_deref()),
+    }
+}

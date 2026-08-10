@@ -1,0 +1,17 @@
+#[derive(Debug, thiserror::Error)]
+pub enum SdkError {
+    #[error("invalid base URL: {0}")]
+    InvalidBaseUrl(String),
+    #[error("could not build HTTP client: {0}")]
+    ClientBuild(String),
+    #[error("HTTP transport failed: {0}")]
+    Transport(String),
+    #[error("HTTP request timed out")]
+    Timeout,
+    #[error("could not encode or decode JSON: {0}")]
+    Serialization(String),
+    #[error("HTTP {status} response: {body}")]
+    Http { status: u16, body: String },
+    #[error("response body exceeded the configured limit")]
+    ResponseTooLarge,
+}

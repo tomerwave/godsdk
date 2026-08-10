@@ -74,13 +74,178 @@ pub(crate) fn render_rust_mock_test(spec: &ApiSpec) -> String {
     render_async_mock_test(&package, &method, &arguments, &method_path)
 }
 
-pub(crate) fn render_rust_models(spec: &ApiSpec) -> String {
-    let mut output = String::from("use serde::{Deserialize, Serialize};\n\n");
+pub(crate) fn render_rust_files(spec: &ApiSpec) -> Vec<(String, String)> {
+    let mut files = render_rust_static_files(spec);
+    files.extend(render_rust_model_files(spec));
+    files
+}
+
+fn render_rust_static_files(spec: &ApiSpec) -> Vec<(String, String)> {
+    let mut files = vec![rust_template(
+        "sdk/rust/src/lib.rs",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/templates/rust_lib.template"
+        )),
+    )];
+    files.extend(render_rust_client_files());
+    files.push((
+        "sdk/rust/src/operations/mod.rs".to_string(),
+        render_rust_operations(spec),
+    ));
+    files
+}
+
+fn render_rust_client_files() -> Vec<(String, String)> {
+    vec![
+        rust_template(
+            "sdk/rust/src/client/mod.rs",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/templates/rust_client_mod.template"
+            )),
+        ),
+        rust_template(
+            "sdk/rust/src/client/auth.rs",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/templates/rust_client_auth.template"
+            )),
+        ),
+        rust_template(
+            "sdk/rust/src/client/builder.rs",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/templates/rust_client_builder.template"
+            )),
+        ),
+        rust_template(
+            "sdk/rust/src/client/error.rs",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/templates/rust_client_error.template"
+            )),
+        ),
+        rust_template(
+            "sdk/rust/src/client/retry.rs",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/templates/rust_client_retry.template"
+            )),
+        ),
+        rust_template(
+            "sdk/rust/src/client/transport.rs",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/templates/rust_client_transport.template"
+            )),
+        ),
+    ]
+}
+
+fn rust_template(path: &str, contents: &str) -> (String, String) {
+    (path.to_string(), contents.to_string())
+}
+
+fn render_rust_model_files(spec: &ApiSpec) -> Vec<(String, String)> {
+    let mut files = Vec::new();
+    let model_modules = spec
+        .schemas
+        .keys()
+        .map(|name| {
+            format!(
+                "mod {name_lower};\npub use {name_lower}::*;",
+                name_lower = snake_case(name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    files.push((
+        "sdk/rust/src/models/mod.rs".to_string(),
+        format!("{model_modules}\n"),
+    ));
     for (name, schema) in &spec.schemas {
-        output.push_str(&render_rust_model(name, schema, spec));
-        output.push('\n');
+        files.push((
+            format!("sdk/rust/src/models/{}.rs", snake_case(name)),
+            format!(
+                "use serde::{{Deserialize, Serialize}};\n\n{}",
+                render_rust_model(name, schema, spec)
+            ),
+        ));
     }
-    output
+    files
+}
+
+fn render_rust_operations(spec: &ApiSpec) -> String {
+    let methods = spec
+        .operations
+        .iter()
+        .map(render_rust_operation)
+        .collect::<String>();
+    format!(
+        "use reqwest::Method;\n\nuse crate::client::{{Client, SdkError}};\nuse crate::models::*;\n\nimpl Client {{\n{methods}}}\n"
+    )
+}
+
+fn render_rust_operation(operation: &Operation) -> String {
+    let parameters = operation
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.location == ParameterLocation::Path)
+        .map(|parameter| format!(", {}: &str", rust_identifier(&parameter.name)))
+        .collect::<String>();
+    let mut path_format = operation.path.clone();
+    let mut path_arguments = Vec::new();
+    for parameter in operation
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.location == ParameterLocation::Path)
+    {
+        path_format = path_format.replace(&format!("{{{}}}", parameter.name), "{}");
+        path_arguments.push(format!(
+            "crate::client::encode_path_segment({})",
+            rust_identifier(&parameter.name)
+        ));
+    }
+    let path = if path_arguments.is_empty() {
+        format!("let path = {:?}.to_string();", path_format)
+    } else {
+        format!(
+            "let path = format!({:?}, {});",
+            path_format,
+            path_arguments.join(", ")
+        )
+    };
+    let response_type = rust_response_type(operation);
+    let decode = if response_type == "String" {
+        "Ok(body)".to_string()
+    } else {
+        format!(
+            "serde_json::from_str::<{response_type}>(&body).map_err(|error| SdkError::Serialization(error.to_string()))"
+        )
+    };
+    format!(
+        "    pub async fn {}(&self{} ) -> Result<{}, SdkError> {{\n        {}\n        let body = self.request(Method::{} , &path).await?;\n        {}\n    }}\n\n",
+        rust_identifier(&operation.operation_id),
+        parameters,
+        response_type,
+        path,
+        http_method_name(operation.method),
+        decode
+    )
+}
+
+fn snake_case(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn rust_response_type(operation: &Operation) -> String {
@@ -232,7 +397,10 @@ fn rust_schema_type(schema: &Schema) -> String {
             properties,
             ..
         } if properties.is_empty() => {
-            format!("BTreeMap<String, {}>", rust_schema_type(value))
+            format!(
+                "std::collections::BTreeMap<String, {}>",
+                rust_schema_type(value)
+            )
         }
         Schema::Object { .. } => "serde_json::Map<String, serde_json::Value>".to_string(),
         Schema::Enum(_) | Schema::OneOf(_) | Schema::AnyOf(_) | Schema::AllOf(_) => {

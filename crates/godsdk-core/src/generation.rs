@@ -6,6 +6,7 @@ use super::generation_transaction::{
     ApplyOptions, ExistingManifest, apply_staged_repository, changed_files, check_changes,
     read_existing_manifest, stale_paths, validate_existing_files,
 };
+use super::governance;
 use super::python::render_python_files;
 use super::typescript::render_typescript_files;
 use super::workflow;
@@ -382,57 +383,13 @@ fn write_project_metadata(
         &render_config(spec, context.targets, context.reference_policy),
         generated,
     )?;
-    write_file(root, "godlint.yaml", &render_generated_godlint(), generated)?;
-    write_governance_files(root, generated)?;
+    governance::write_files(root, generated)?;
     write_file(
         root,
         "README.md",
         &render_readme(spec, context.targets),
         generated,
     )
-}
-
-fn write_governance_files(
-    root: &Path,
-    generated: &mut Vec<PathBuf>,
-) -> Result<(), GenerationError> {
-    write_file(
-        root,
-        "godharness.yaml",
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/assets/godharness.yaml"
-        )),
-        generated,
-    )?;
-    write_file(
-        root,
-        ".github/godsuite-versions.yml",
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/assets/godsuite-versions.yml"
-        )),
-        generated,
-    )?;
-    write_file(
-        root,
-        "scripts/install_godlint.sh",
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/assets/install_godlint.sh"
-        )),
-        generated,
-    )?;
-    write_file(
-        root,
-        "scripts/install_godharness.sh",
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/assets/install_godharness.sh"
-        )),
-        generated,
-    )?;
-    Ok(())
 }
 
 fn write_attention_document(
@@ -461,12 +418,5 @@ fn write_attention_document(
             actions.join("\n")
         ),
         generated,
-    )
-}
-
-fn render_generated_godlint() -> String {
-    format!(
-        "{}\nexclude:\n  - sdk/typescript/native/index.js\n  - sdk/typescript/native/index.d.ts\n  - sdk/typescript/native/*.node\n  - sdk/typescript/native/target/**\n  - sdk/typescript/node_modules/**\n",
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/godlint.yaml"))
     )
 }

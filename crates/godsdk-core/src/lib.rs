@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 mod code_writer;
 mod generation;
 mod generation_transaction;
+mod governance;
 mod ingestion_contracts;
 mod ingestion_refs;
 mod ingestion_security;

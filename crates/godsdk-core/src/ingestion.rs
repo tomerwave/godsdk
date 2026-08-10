@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::Schema;
 use crate::ir::{ApiIr, HttpMethod, Operation, Parameter, ParameterLocation, Response};
 use crate::schema::schema_from_value;
-use crate::Schema;
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum IngestionError {
     #[error("could not read OpenAPI document {path}: {message}")]

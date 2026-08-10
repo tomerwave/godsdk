@@ -9,11 +9,11 @@ mod rust_ast;
 mod schema;
 mod typescript;
 pub use generation::generate;
+pub use ir::{ApiIr, HttpMethod, Operation, Parameter, ParameterLocation, Response};
 pub(crate) use rust_ast::render_files as render_rust_files;
 pub(crate) use rust_ast::render_mock_test as render_rust_mock_test;
 pub(crate) use rust_ast::rust_identifier;
 pub use schema::Schema;
-pub use ir::{ApiIr, HttpMethod, Operation, Parameter, ParameterLocation, Response};
 pub type ApiSpec = ApiIr;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenerationRequest {

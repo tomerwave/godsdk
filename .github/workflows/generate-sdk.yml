@@ -4,11 +4,27 @@ on:
   workflow_call:
     inputs:
       spec-path:
-        required: true
+        required: false
+        type: string
+      spec-url:
+        required: false
+        type: string
+      spec-sha256:
+        required: false
         type: string
       targets:
         required: false
         default: rust,typescript
+        type: string
+      remote-ref-hosts:
+        required: false
+        type: string
+      remote-ref-pins:
+        required: false
+        type: string
+      generator-version:
+        required: false
+        default: 0.1.2
         type: string
       output:
         required: false
@@ -29,7 +45,13 @@ on:
   workflow_dispatch:
     inputs:
       spec-path:
-        required: true
+        required: false
+        type: string
+      spec-url:
+        required: false
+        type: string
+      spec-sha256:
+        required: false
         type: string
       targets:
         required: true
@@ -44,6 +66,16 @@ on:
         default: dry-run
         type: choice
         options: [write, dry-run, check]
+      remote-ref-hosts:
+        required: false
+        type: string
+      remote-ref-pins:
+        required: false
+        type: string
+      generator-version:
+        required: false
+        default: 0.1.2
+        type: string
       prune:
         required: true
         default: false
@@ -65,7 +97,12 @@ jobs:
       - uses: tomerwave/godsdk@d50d7166003259bdd270a7486bcf7a424a099d88 # v0.1.2
         with:
           spec-path: ${{ inputs.spec-path }}
+          spec-url: ${{ inputs.spec-url }}
+          spec-sha256: ${{ inputs.spec-sha256 }}
           targets: ${{ inputs.targets }}
+          remote-ref-hosts: ${{ inputs.remote-ref-hosts }}
+          remote-ref-pins: ${{ inputs.remote-ref-pins }}
+          generator-version: ${{ inputs.generator-version }}
           output: ${{ inputs.output }}
           mode: ${{ inputs.mode }}
           prune: ${{ inputs.prune }}
@@ -88,7 +125,12 @@ jobs:
       - uses: tomerwave/godsdk@d50d7166003259bdd270a7486bcf7a424a099d88 # v0.1.2
         with:
           spec-path: ${{ inputs.spec-path }}
+          spec-url: ${{ inputs.spec-url }}
+          spec-sha256: ${{ inputs.spec-sha256 }}
           targets: ${{ inputs.targets }}
+          remote-ref-hosts: ${{ inputs.remote-ref-hosts }}
+          remote-ref-pins: ${{ inputs.remote-ref-pins }}
+          generator-version: ${{ inputs.generator-version }}
           output: ${{ inputs.output }}
           mode: write
           prune: ${{ inputs.prune }}

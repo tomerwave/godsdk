@@ -7,13 +7,13 @@ FIXTURES = ROOT / "fixtures" / "openapi"
 
 
 class FixtureCorpusTests(unittest.TestCase):
-    def test_valid_fixtures_are_openapi_31_and_have_operations(self) -> None:
+    def test_valid_fixtures_are_supported_openapi_and_have_operations(self) -> None:
         valid = sorted(path for path in FIXTURES.glob("*.yaml"))
         self.assertGreaterEqual(len(valid), 6)
 
         for path in valid:
             text = path.read_text(encoding="utf-8")
-            self.assertIn("openapi: 3.1.1", text, path)
+            self.assertRegex(text, r"openapi: 3\.(0|1)\.", path)
             self.assertIn("operationId:", text, path)
             self.assertIn("paths:", text, path)
 

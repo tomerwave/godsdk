@@ -89,10 +89,13 @@ fn run_generate(args: GenerateArgs) -> Result<(), godsdk_core::GenerationError> 
 }
 
 fn report_dry_run(mode: GenerationMode, files: Vec<std::path::PathBuf>) {
-    if mode == GenerationMode::DryRun {
-        for path in files {
-            println!("would change {}", path.display());
-        }
+    let prefix = if mode == GenerationMode::DryRun {
+        "would change"
+    } else {
+        "changed"
+    };
+    for path in files {
+        println!("{prefix} {}", path.display());
     }
 }
 

@@ -8,6 +8,9 @@ inputs:
   spec-url:
     description: Explicit remote OpenAPI URL. Use only when remote input is intended.
     required: false
+  spec-sha256:
+    description: Required SHA-256 checksum for spec-url downloads.
+    required: false
   targets:
     description: Comma-separated targets, for example rust,python,typescript.
     required: false
@@ -24,10 +27,20 @@ inputs:
     description: Delete stale generated files after checking for user edits.
     required: false
     default: "false"
+  remote-ref-hosts:
+    description: Comma- or newline-separated hosts allowed for remote OpenAPI $ref documents.
+    required: false
+  remote-ref-pins:
+    description: Comma- or newline-separated URL=SHA256 pins for remote OpenAPI $ref documents.
+    required: false
   generator-version:
     description: GodSDK release version to download, without or with a leading v.
     required: false
     default: 0.1.2
+outputs:
+  changed-files:
+    description: Newline-separated generated paths changed by this invocation.
+    value: ${{ steps.generate.outputs.changed-files }}
 runs:
   using: composite
   steps:
@@ -62,14 +75,18 @@ runs:
         chmod +x "${RUNNER_TEMP}/godsdk/godsdk"
         echo "${RUNNER_TEMP}/godsdk" >> "${GITHUB_PATH}"
     - name: Generate SDK repository
+      id: generate
       shell: bash
       env:
         SPEC_PATH: ${{ inputs.spec-path }}
         SPEC_URL: ${{ inputs.spec-url }}
+        SPEC_SHA256: ${{ inputs.spec-sha256 }}
         TARGETS: ${{ inputs.targets }}
         OUTPUT: ${{ inputs.output }}
         MODE: ${{ inputs.mode }}
         PRUNE: ${{ inputs.prune }}
+        REMOTE_REF_HOSTS: ${{ inputs.remote-ref-hosts }}
+        REMOTE_REF_PINS: ${{ inputs.remote-ref-pins }}
       run: |
         set -euo pipefail
         if [ -n "${SPEC_PATH}" ] && [ -n "${SPEC_URL}" ]; then
@@ -82,8 +99,24 @@ runs:
         fi
         spec="${SPEC_PATH}"
         if [ -n "${SPEC_URL}" ]; then
-          spec="${RUNNER_TEMP}/godsdk/openapi.yaml"
-          curl --fail --location --retry 3 "${SPEC_URL}" -o "${spec}"
+          if [ -z "${SPEC_SHA256}" ]; then
+            echo "spec-sha256 is required when spec-url is used" >&2
+            exit 1
+          fi
+          if ! [[ "${SPEC_SHA256}" =~ ^[[:xdigit:]]{64}$ ]]; then
+            echo "spec-sha256 must be a 64-character hexadecimal SHA-256 digest" >&2
+            exit 1
+          fi
+          SPEC_SHA256="${SPEC_SHA256,,}"
+          spec="${RUNNER_TEMP}/godsdk/spec/openapi.yaml"
+          mkdir -p "$(dirname "${spec}")"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 "${SPEC_URL}" -o "${spec}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            printf '%s  %s\n' "${SPEC_SHA256}" "${spec}" | sha256sum --check --status -
+          else
+            actual="$(shasum -a 256 "${spec}" | awk '{print $1}')"
+            test "${actual}" = "${SPEC_SHA256}"
+          fi
         fi
         args=(generate --source "${spec}" --output "${OUTPUT}" --targets "${TARGETS}")
         if [ "${PRUNE}" = "true" ]; then
@@ -95,4 +128,22 @@ runs:
           check) args+=(--check) ;;
           *) echo "Unsupported mode: ${MODE}" >&2; exit 1 ;;
         esac
-        godsdk "${args[@]}"
+        append_values() {
+          local option="$1"
+          local values="$2"
+          while IFS= read -r value; do
+            value="${value//[[:space:]]/}"
+            if [ -n "${value}" ]; then
+              args+=("${option}" "${value}")
+            fi
+          done < <(printf '%s\n' "${values}" | tr ',' '\n')
+        }
+        append_values --remote-ref-host "${REMOTE_REF_HOSTS}"
+        append_values --remote-ref-pin "${REMOTE_REF_PINS}"
+        godsdk "${args[@]}" | tee "${RUNNER_TEMP}/godsdk-output.log"
+        changed="$(sed -n 's/^changed //p; s/^would change //p' "${RUNNER_TEMP}/godsdk-output.log")"
+        {
+          echo 'changed-files<<GODSDK_CHANGED_FILES'
+          printf '%s\n' "${changed}"
+          echo GODSDK_CHANGED_FILES
+        } >> "${GITHUB_OUTPUT}"

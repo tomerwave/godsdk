@@ -1,9 +1,12 @@
 #[path = "python/errors_render.rs"]
 mod errors_render;
+#[path = "python/models_render.rs"]
+mod models_render;
 
 use super::code_writer::CodeWriter;
 use crate::{ApiIr, Operation, ParameterLocation, Schema, rust_identifier};
 use errors_render::{python_error_contract_lines, python_error_file_lines};
+use models_render::render_models;
 
 pub(crate) fn render_python_files(spec: &ApiIr) -> Vec<(String, String)> {
     let package = package_name(spec);
@@ -13,7 +16,10 @@ pub(crate) fn render_python_files(spec: &ApiIr) -> Vec<(String, String)> {
             pyproject(spec, &package),
         ),
         (format!("sdk/python/{package}/__init__.py"), init_file(spec)),
-        (format!("sdk/python/{package}/models.py"), models(spec)),
+        (
+            format!("sdk/python/{package}/models.py"),
+            render_models(spec),
+        ),
         (format!("sdk/python/{package}/errors.py"), errors(spec)),
         (format!("sdk/python/{package}/client.py"), client(spec)),
         (
@@ -173,46 +179,6 @@ fn error_contract(operation: &Operation) -> String {
         .flatten()
         .collect::<Vec<_>>();
     CodeWriter::from_lines(python_error_contract_lines(&name, &arms, &subclasses))
-}
-
-fn models(spec: &ApiIr) -> String {
-    let mut output = String::from(
-        "from __future__ import annotations\n\nfrom enum import Enum\nfrom pydantic import BaseModel, ConfigDict\n\n",
-    );
-    for (name, schema) in &spec.schemas {
-        output.push_str(&model(name, schema, spec));
-    }
-    for operation in &spec.operations {
-        if let Some(schema) = inline_success_schema(operation) {
-            output.push_str(&model(&operation_response_name(operation), schema, spec));
-        }
-    }
-    output
-}
-
-fn model(name: &str, schema: &Schema, spec: &ApiIr) -> String {
-    if let Schema::Enum(values) = schema {
-        let variants = values
-            .iter()
-            .map(|value| format!("    {} = {value:?}\n", enum_identifier(value)))
-            .collect::<String>();
-        return format!("class {name}(str, Enum):\n{variants}\n");
-    }
-    let fields = object_fields(schema, spec)
-        .into_iter()
-        .map(|(property, property_schema, required)| {
-            let annotation = python_type(&property_schema);
-            if required {
-                format!("    {}: {annotation}\n", python_identifier(&property))
-            } else {
-                format!(
-                    "    {}: {annotation} | None = None\n",
-                    python_identifier(&property)
-                )
-            }
-        })
-        .collect::<String>();
-    format!("class {name}(BaseModel):\n    model_config = ConfigDict(extra=\"forbid\")\n{fields}\n")
 }
 
 fn client(spec: &ApiIr) -> String {
@@ -389,50 +355,6 @@ fn model_test(spec: &ApiIr, package: &str) -> String {
     )
 }
 
-fn object_fields(schema: &Schema, spec: &ApiIr) -> Vec<(String, Schema, bool)> {
-    match schema {
-        Schema::Object {
-            properties,
-            required,
-            ..
-        } => properties
-            .iter()
-            .map(|(name, schema)| (name.clone(), schema.clone(), required.contains(name)))
-            .collect(),
-        Schema::AllOf(parts) => parts
-            .iter()
-            .flat_map(|part| object_fields(part, spec))
-            .collect(),
-        Schema::Reference(name) => spec
-            .schemas
-            .get(name)
-            .map(|schema| object_fields(schema, spec))
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    }
-}
-
-fn python_type(schema: &Schema) -> String {
-    match schema {
-        Schema::String { .. } => "str".to_string(),
-        Schema::Integer { .. } => "int".to_string(),
-        Schema::Number { .. } => "float".to_string(),
-        Schema::Boolean => "bool".to_string(),
-        Schema::Null => "None".to_string(),
-        Schema::Array(item) => format!("list[{}]", python_type(item)),
-        Schema::Object { .. } => "dict[str, object]".to_string(),
-        Schema::Enum(_) | Schema::Reference(_) => {
-            schema_model_name(schema).unwrap_or_else(|| "str".to_string())
-        }
-        Schema::Nullable(inner) => format!("{} | None", python_type(inner)),
-        Schema::OneOf(values) | Schema::AnyOf(values) | Schema::AllOf(values) => values
-            .iter()
-            .map(python_type)
-            .collect::<Vec<_>>()
-            .join(" | "),
-    }
-}
-
 fn schema_model_name(schema: &Schema) -> Option<String> {
     match schema {
         Schema::Reference(name) => Some(name.clone()),
@@ -487,10 +409,6 @@ fn python_identifier(value: &str) -> String {
         output.insert(0, '_');
     }
     output
-}
-
-fn enum_identifier(value: &str) -> String {
-    type_identifier(value).to_ascii_uppercase()
 }
 
 fn slug(value: &str) -> String {

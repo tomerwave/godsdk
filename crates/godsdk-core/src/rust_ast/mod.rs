@@ -2,7 +2,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::LitStr;
 
-use crate::ApiSpec;
+use crate::ApiIr;
 
 mod builder;
 mod client;
@@ -11,7 +11,7 @@ mod models;
 mod operations;
 mod transport;
 
-pub(crate) fn render_files(spec: &ApiSpec) -> Vec<(String, String)> {
+pub(crate) fn render_files(spec: &ApiIr) -> Vec<(String, String)> {
     let mut files = vec![
         rust_file("sdk/rust/src/lib.rs", render_lib()),
         rust_file("sdk/rust/src/client/mod.rs", client::render_mod()),

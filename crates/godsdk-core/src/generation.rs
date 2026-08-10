@@ -4,7 +4,7 @@ use std::process::Command;
 
 use super::typescript::render_typescript_files;
 use super::{
-    ApiSpec, GenerationError, GenerationRequest, GenerationResult, IngestionError, render_config,
+    ApiIr, GenerationError, GenerationRequest, GenerationResult, IngestionError, render_config,
     render_manifest, render_readme, render_rust_cargo, render_rust_files, render_rust_mock_test,
     write_file,
 };
@@ -19,7 +19,7 @@ pub fn generate(request: &GenerationRequest) -> Result<GenerationResult, Generat
 fn generate_repository(
     root: &Path,
     source: &str,
-    spec: &ApiSpec,
+    spec: &ApiIr,
 ) -> Result<Vec<PathBuf>, GenerationError> {
     let mut generated = Vec::new();
     write_generated_content(root, source, spec, &mut generated)?;
@@ -28,16 +28,16 @@ fn generate_repository(
     Ok(generated)
 }
 
-fn load_spec(request: &GenerationRequest) -> Result<(String, ApiSpec), GenerationError> {
+fn load_spec(request: &GenerationRequest) -> Result<(String, ApiIr), GenerationError> {
     let source = read_source(request)?;
-    let spec = ApiSpec::parse(&source)?;
+    let spec = ApiIr::parse(&source)?;
     Ok((source, spec))
 }
 
 fn write_generated_content(
     root: &Path,
     source: &str,
-    spec: &ApiSpec,
+    spec: &ApiIr,
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
     write_source_and_rust(root, source, spec, generated)?;
@@ -78,7 +78,7 @@ fn prepare_output(request: &GenerationRequest) -> Result<(), GenerationError> {
 fn write_source_and_rust(
     root: &Path,
     source: &str,
-    spec: &ApiSpec,
+    spec: &ApiIr,
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
     write_source_file(root, source, generated)?;
@@ -88,7 +88,7 @@ fn write_source_and_rust(
 
 fn write_typescript_files(
     root: &Path,
-    spec: &ApiSpec,
+    spec: &ApiIr,
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
     for (path, contents) in render_typescript_files(spec) {
@@ -107,7 +107,7 @@ fn write_source_file(
 
 fn write_rust_files(
     root: &Path,
-    spec: &ApiSpec,
+    spec: &ApiIr,
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
     write_rust_manifests(root, spec, generated)?;
@@ -117,7 +117,7 @@ fn write_rust_files(
 
 fn write_rust_manifests(
     root: &Path,
-    spec: &ApiSpec,
+    spec: &ApiIr,
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
     write_file(
@@ -130,7 +130,7 @@ fn write_rust_manifests(
 
 fn write_rust_sources(
     root: &Path,
-    spec: &ApiSpec,
+    spec: &ApiIr,
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
     for (path, contents) in render_rust_files(spec) {
@@ -215,7 +215,7 @@ fn generate_lockfile_at(
 
 fn write_metadata(
     root: &Path,
-    spec: &ApiSpec,
+    spec: &ApiIr,
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
     write_workflows(root, generated)?;
@@ -247,7 +247,7 @@ fn write_workflows(root: &Path, generated: &mut Vec<PathBuf>) -> Result<(), Gene
 
 fn write_project_metadata(
     root: &Path,
-    spec: &ApiSpec,
+    spec: &ApiIr,
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
     write_file(root, ".godsdk/config.yaml", &render_config(spec), generated)?;

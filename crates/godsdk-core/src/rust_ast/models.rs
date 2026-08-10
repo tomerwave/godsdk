@@ -3,11 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use crate::{ApiSpec, Schema};
+use crate::{ApiIr, Schema};
 
 use super::{rust_identifier, rust_type_name, snake_case};
 
-pub(super) fn render(spec: &ApiSpec) -> Vec<(String, String)> {
+pub(super) fn render(spec: &ApiIr) -> Vec<(String, String)> {
     let modules = spec.schemas.keys().map(|name| {
         let module = format_ident!("{}", snake_case(name));
         quote! { mod #module; pub use #module::*; }
@@ -32,7 +32,7 @@ fn rust_file(path: &str, tokens: TokenStream) -> (String, String) {
     (path.to_string(), prettyplease::unparse(&file))
 }
 
-fn model_tokens(name: &str, schema: &Schema, spec: &ApiSpec) -> TokenStream {
+fn model_tokens(name: &str, schema: &Schema, spec: &ApiIr) -> TokenStream {
     let ident = format_ident!("{}", rust_type_name(name));
     match schema {
         Schema::Enum(values) => render_enum(&ident, values),
@@ -76,7 +76,7 @@ fn render_union(ident: &syn::Ident, variants: &[Schema]) -> TokenStream {
     }
 }
 
-fn render_object(ident: &syn::Ident, schema: &Schema, spec: &ApiSpec) -> TokenStream {
+fn render_object(ident: &syn::Ident, schema: &Schema, spec: &ApiIr) -> TokenStream {
     let (properties, required, additional) = object_shape(schema, spec);
     let fields = properties.iter().map(|(property, property_schema)| {
         let field = format_ident!("{}", rust_identifier(property));
@@ -134,7 +134,7 @@ fn schema_tokens(schema: &Schema) -> TokenStream {
 
 fn object_shape(
     schema: &Schema,
-    spec: &ApiSpec,
+    spec: &ApiIr,
 ) -> (BTreeMap<String, Schema>, BTreeSet<String>, Option<Schema>) {
     match schema {
         Schema::Object {

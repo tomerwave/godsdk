@@ -9,7 +9,9 @@ Before the first version tag, configure these external services:
 - Confirm the `godsdk-cli` and `godsdk-core` package names on crates.io and configure the
   `crates-io` GitHub environment with a crates.io trusted publisher or `CARGO_REGISTRY_TOKEN`.
 - Create or control the npm `@godsdk` scope, reserve `godsdk` and `@godsdk/cli`, and configure the
-  `npm` GitHub environment as a trusted publisher with npm provenance enabled.
+  `npm` GitHub environment as a trusted publisher with npm provenance enabled. `NPM_TOKEN` was
+  only needed for the bootstrap release and can be removed after the first trusted-publishing
+  release succeeds.
 - Configure the `homebrew-tap` GitHub environment and add `HOMEBREW_TAP_SSH_KEY` with write access
   to `tomerwave/homebrew-tap`.
 - Confirm the supported target matrix and that the required GitHub-hosted ARM runners are

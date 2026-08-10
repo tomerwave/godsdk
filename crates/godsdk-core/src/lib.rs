@@ -11,7 +11,7 @@ mod ingestion_contracts;
 mod ingestion_refs;
 mod ingestion_security;
 mod ir;
-mod rust_ast;
+pub(crate) mod rust_ast;
 mod schema;
 mod typescript;
 pub use generation::generate;

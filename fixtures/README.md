@@ -4,6 +4,7 @@ These fixtures are versioned inputs for generated-repository tests. They are int
 by behavior so every generator target can run the same contract suite:
 
 - `openapi/minimal-3.1.yaml` is the baseline.
+- `openapi/minimal-3.0.yaml` verifies OpenAPI 3.0 compatibility and nullable schema normalization.
 - `openapi/minimal-3.1-changed-operation.yaml` adds one operation without changing the existing
   operation or schema.
 - `openapi/parameters-and-errors-3.1.yaml` covers parameter locations, request bodies, media

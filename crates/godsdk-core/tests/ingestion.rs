@@ -18,6 +18,18 @@ fn parse_fixture(name: &str) -> godsdk_core::ApiSpec {
 }
 
 #[test]
+fn accepts_openapi_30_and_normalizes_nullable_schema_values() {
+    let spec = parse_fixture("minimal-3.0.yaml");
+
+    assert_eq!(spec.openapi_version, "3.0.3");
+    assert!(matches!(
+        spec.schemas.get("Pet"),
+        Some(Schema::Object { properties, .. })
+            if matches!(properties.get("nickname"), Some(Schema::Nullable(_)))
+    ));
+}
+
+#[test]
 fn normalizes_yaml_operations_in_stable_order() {
     let spec = parse_fixture("parameters-and-errors-3.1.yaml");
 

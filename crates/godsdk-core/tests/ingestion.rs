@@ -89,6 +89,22 @@ fn normalizes_named_schemas_and_typed_operation_shapes() {
     assert!(
         matches!(operation.request_body_schema, Some(Schema::Reference(ref name)) if name == "DocumentInput")
     );
+    assert!(matches!(
+        operation
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == "dry_run")
+            .map(|parameter| &parameter.schema),
+        Some(Schema::Boolean)
+    ));
+    assert!(matches!(
+        operation
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == "account_id")
+            .map(|parameter| &parameter.schema),
+        Some(Schema::String { .. })
+    ));
     assert!(
         matches!(operation.responses[0].schema, Some(Schema::Reference(ref name)) if name == "Document")
     );

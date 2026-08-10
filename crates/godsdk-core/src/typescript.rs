@@ -1,14 +1,18 @@
 #[path = "typescript/identifiers.rs"]
 mod identifiers;
+#[path = "typescript/operations_render.rs"]
+mod operations_render;
 #[path = "typescript/schemas.rs"]
 mod schemas;
 
 use super::code_writer::CodeWriter;
-use super::rust_ast::mock_success_body;
-use super::{ApiIr, Operation};
+use super::rust_ast::{mock_request_body, mock_success_body};
+use super::{ApiIr, Operation, Schema};
 use identifiers::{slug, ts_identifier};
+use operations_render::{render_native_operation, render_operation};
 use schemas::{
-    inline_success_schema, operation_response_name, render_schemas, render_types, schema_model_name,
+    inline_request_schema, inline_success_schema, operation_request_name, operation_response_name,
+    render_schemas, render_types, schema_model_name,
 };
 
 pub(crate) fn render_typescript_files(spec: &ApiIr) -> Vec<(&'static str, String)> {
@@ -239,13 +243,7 @@ fn render_native_loader(spec: &ApiIr) -> String {
             format!(
                 "  {}({}): Promise<NativeResult>;\n",
                 ts_identifier(&operation.operation_id),
-                operation
-                    .parameters
-                    .iter()
-                    .filter(|parameter| parameter.location == super::ParameterLocation::Path)
-                    .map(|parameter| format!("{}: string", ts_identifier(&parameter.name)))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                native_method_parameters(operation)
             )
         })
         .collect::<String>();
@@ -262,19 +260,38 @@ fn render_native_declaration(spec: &ApiIr) -> String {
             format!(
                 "  {}({}): Promise<NativeResult>;\n",
                 ts_identifier(&operation.operation_id),
-                operation
-                    .parameters
-                    .iter()
-                    .filter(|parameter| parameter.location == super::ParameterLocation::Path)
-                    .map(|parameter| format!("{}: string", ts_identifier(&parameter.name)))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                native_method_parameters(operation)
             )
         })
         .collect::<String>();
     format!(
         "export type NativeValue = null | boolean | number | string | NativeValue[] | {{ [key: string]: NativeValue }};\nexport type NativeResult = {{ ok: true; value: NativeValue }} | {{ ok: false; status: number; body: NativeValue }};\n\nexport declare class NativeClient {{\n{methods}}}\n\ndeclare const binding: {{ NativeClient: typeof NativeClient }};\nexport default binding;\n"
     )
+}
+
+fn native_method_parameters(operation: &Operation) -> String {
+    let mut parameters = Vec::new();
+    if let Some(body) = operation.request_body_details.as_ref() {
+        parameters.push(if body.required {
+            "requestBody: string".to_string()
+        } else {
+            "requestBody?: string".to_string()
+        });
+    }
+    parameters.extend(ordered_parameters(operation).into_iter().map(|parameter| {
+        let name = ts_identifier(&parameter.name);
+        let ty = if parameter.location == super::ParameterLocation::Path {
+            "string".to_string()
+        } else {
+            schema_type_name(&parameter.schema)
+        };
+        if parameter.required {
+            format!("{name}: {ty}")
+        } else {
+            format!("{name}?: {ty}")
+        }
+    }));
+    parameters.join(", ")
 }
 
 fn render_index(spec: &ApiIr) -> String {
@@ -297,11 +314,34 @@ fn render_index_header(spec: &ApiIr) -> String {
         .filter(|operation| inline_success_schema(operation).is_some())
         .map(operation_response_name)
         .collect::<Vec<_>>();
-    for name in &response_names {
+    let request_names = spec
+        .operations
+        .iter()
+        .filter(|operation| inline_request_schema(operation).is_some())
+        .map(operation_request_name)
+        .collect::<Vec<_>>();
+    append_schema_imports(&mut imports, &response_names);
+    append_schema_imports(&mut imports, &request_names);
+    append_error_imports(&mut imports, spec);
+    imports.push_str("import { SdkHttpError } from \"./errors.js\";\n");
+    let mut type_names = spec.schemas.keys().cloned().collect::<Vec<_>>();
+    type_names.extend(response_names);
+    type_names.extend(request_names);
+    let types = type_names.join(", ");
+    format!(
+        "import * as z from \"zod\";\nimport {{ loadNative, type NativeClient }} from \"./native.js\";\nimport type {{ {types} }} from \"./types.js\";\n{imports}\nexport * from \"./schemas.js\";\nexport * from \"./types.js\";\nexport * from \"./errors.js\";\n\nexport class Client {{\n  private readonly native: NativeClient;\n\n  constructor(baseUrl: string) {{\n    this.native = loadNative(baseUrl);\n  }}\n\n"
+    )
+}
+
+fn append_schema_imports(imports: &mut String, names: &[String]) {
+    for name in names {
         imports.push_str(&format!(
             "import {{ {name}Schema }} from \"./schemas.js\";\n"
         ));
     }
+}
+
+fn append_error_imports(imports: &mut String, spec: &ApiIr) {
     for operation in spec
         .operations
         .iter()
@@ -312,13 +352,6 @@ fn render_index_header(spec: &ApiIr) -> String {
             type_identifier(&operation.operation_id)
         ));
     }
-    imports.push_str("import { SdkHttpError } from \"./errors.js\";\n");
-    let mut type_names = spec.schemas.keys().cloned().collect::<Vec<_>>();
-    type_names.extend(response_names);
-    let types = type_names.join(", ");
-    format!(
-        "import * as z from \"zod\";\nimport {{ loadNative, type NativeClient }} from \"./native.js\";\nimport type {{ {types} }} from \"./types.js\";\n{imports}\nexport * from \"./schemas.js\";\nexport * from \"./types.js\";\nexport * from \"./errors.js\";\n\nexport class Client {{\n  private readonly native: NativeClient;\n\n  constructor(baseUrl: string) {{\n    this.native = loadNative(baseUrl);\n  }}\n\n"
-    )
 }
 
 fn render_index_methods(spec: &ApiIr) -> String {
@@ -328,50 +361,30 @@ fn render_index_methods(spec: &ApiIr) -> String {
         .collect()
 }
 
-fn render_operation(operation: &Operation, _spec: &ApiIr) -> String {
-    let parameters = operation
+fn schema_type_name(schema: &Schema) -> String {
+    match schema {
+        Schema::Reference(name) => name.clone(),
+        Schema::String { .. } => "string".to_string(),
+        Schema::Integer { .. } | Schema::Number { .. } => "number".to_string(),
+        Schema::Boolean => "boolean".to_string(),
+        Schema::Null => "null".to_string(),
+        Schema::Array(item) => format!("{}[]", schema_type_name(item)),
+        _ => "NativeValue".to_string(),
+    }
+}
+
+fn ordered_parameters(operation: &Operation) -> Vec<&crate::Parameter> {
+    operation
         .parameters
         .iter()
-        .filter(|parameter| parameter.location == super::ParameterLocation::Path)
-        .map(|parameter| format!("{}: string", ts_identifier(&parameter.name)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let response = operation
-        .responses
-        .iter()
-        .find(|response| response.status.starts_with('2'))
-        .and_then(|response| response.schema.as_ref());
-    let method = ts_identifier(&operation.operation_id);
-    let arguments = operation
-        .parameters
-        .iter()
-        .filter(|parameter| parameter.location == super::ParameterLocation::Path)
-        .map(|parameter| ts_identifier(&parameter.name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let error = has_error_responses(operation)
-        .then(|| format!("{}Error", type_identifier(&operation.operation_id)));
-    let error_handling = error.as_ref().map_or_else(
-        || "      throw new SdkHttpError(result.status, result.body);\n".to_string(),
-        |error| format!("      throw {}.from(result);\n", error),
-    );
-    let success = response.map_or_else(
-        || "    return;\n".to_string(),
-        |response| {
-            let model =
-                schema_model_name(response).unwrap_or_else(|| operation_response_name(operation));
-            let parser = format!("{model}Schema");
-            format!("    return {parser}.parse(result.value);\n")
-        },
-    );
-    let return_type = response
-        .map(|response| {
-            schema_model_name(response).unwrap_or_else(|| operation_response_name(operation))
-        })
-        .unwrap_or_else(|| "void".to_string());
-    format!(
-        "  async {method}({parameters}): Promise<{return_type}> {{\n    const result = await this.native.{method}({arguments});\n    if (!result.ok) {{\n{error_handling}    }}\n{success}  }}\n\n"
-    )
+        .filter(|parameter| parameter.required)
+        .chain(
+            operation
+                .parameters
+                .iter()
+                .filter(|parameter| !parameter.required),
+        )
+        .collect()
 }
 
 fn render_validation_test(spec: &ApiIr) -> String {
@@ -390,16 +403,33 @@ fn render_client_test(spec: &ApiIr) -> String {
     let method = ts_identifier(&operation.operation_id);
     let success_json =
         String::from_utf8(mock_success_body(spec, operation)).unwrap_or_else(|_| "{}".to_string());
-    let arguments = operation
-        .parameters
-        .iter()
-        .filter(|parameter| parameter.location == super::ParameterLocation::Path)
-        .map(|_| "\"pet-1\"")
-        .collect::<Vec<_>>()
-        .join(", ");
+    let mut arguments = Vec::new();
+    if operation.request_body_details.is_some() {
+        let request_json = String::from_utf8(mock_request_body(spec, operation))
+            .unwrap_or_else(|_| "null".to_string());
+        arguments.push(request_json);
+    }
+    arguments.extend(
+        ordered_parameters(operation)
+            .into_iter()
+            .map(test_parameter_argument)
+            .collect::<Vec<_>>(),
+    );
+    let arguments = arguments.join(", ");
     format!(
         "import {{ createServer }} from \"node:http\";\nimport {{ afterAll, beforeAll, describe, expect, it }} from \"vitest\";\nimport {{ Client }} from \"../src/index.js\";\n\nconst server = createServer((_request, response) => {{\n  response.writeHead(200, {{ \"content-type\": \"application/json\" }});\n  response.end(JSON.stringify({success_json}));\n}});\nlet baseUrl = \"\";\n\nbeforeAll(async () => {{\n  await new Promise<void>((resolve) => server.listen(0, \"127.0.0.1\", resolve));\n  const address = server.address();\n  if (address === null || typeof address === \"string\") throw new Error(\"mock server did not bind\");\n  baseUrl = `http://127.0.0.1:${{address.port}}`;\n}});\n\nafterAll(() => server.close());\n\ndescribe(\"generated native client\", () => {{\n  it(\"calls the Rust-backed local mock API\", async () => {{\n    const response = await new Client(baseUrl).{method}({arguments});\n    expect(response).toEqual({success_json});\n  }});\n}});\n"
     )
+}
+
+fn test_parameter_argument(parameter: &crate::Parameter) -> String {
+    if !parameter.required {
+        return "undefined".to_string();
+    }
+    match parameter.schema {
+        Schema::Boolean => "true".to_string(),
+        Schema::Integer { .. } | Schema::Number { .. } => "1".to_string(),
+        _ => "\"example\"".to_string(),
+    }
 }
 
 fn render_readme(spec: &ApiIr) -> String {
@@ -427,7 +457,7 @@ fn render_native_rust(spec: &ApiIr) -> String {
     let methods = spec
         .operations
         .iter()
-        .map(render_native_operation)
+        .map(|operation| render_native_operation(operation, &rust_crate_name(spec)))
         .collect::<String>();
     let error_imports = spec
         .operations
@@ -443,52 +473,6 @@ fn render_native_rust(spec: &ApiIr) -> String {
     format!(
         "use napi::bindgen_prelude::*;\nuse napi_derive::napi;\nuse {}::{{Client as RustClient, SdkError{error_imports}}};\n\n#[napi]\npub struct NativeClient {{\n    inner: RustClient,\n}}\n\n#[napi]\nimpl NativeClient {{\n    #[napi(constructor)]\n    pub fn new(base_url: String) -> Result<Self> {{\n        let inner = RustClient::builder(base_url).build().map_err(to_napi_error)?;\n        Ok(Self {{ inner }})\n    }}\n\n{methods}}}\n\nfn to_napi_error(error: impl std::fmt::Display) -> Error {{\n    Error::from_reason(error.to_string())\n}}\n",
         rust_crate_name(spec),
-    )
-}
-
-fn render_native_operation(operation: &Operation) -> String {
-    let parameters = operation
-        .parameters
-        .iter()
-        .filter(|parameter| parameter.location == super::ParameterLocation::Path)
-        .map(|parameter| format!(", {}: String", super::rust_identifier(&parameter.name)))
-        .collect::<String>();
-    let arguments = operation
-        .parameters
-        .iter()
-        .filter(|parameter| parameter.location == super::ParameterLocation::Path)
-        .map(|parameter| format!("&{}", super::rust_identifier(&parameter.name)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let method = super::rust_identifier(&operation.operation_id);
-    let body = if has_error_responses(operation) {
-        let error_type = format!("{}Error", type_identifier(&operation.operation_id));
-        let arms = operation
-            .responses
-            .iter()
-            .filter(|response| !response.status.starts_with('2'))
-            .filter_map(|response| {
-                let status = response.status.parse::<u16>().ok()?;
-                let variant = format!("Status{status}");
-                let (pattern, body) = response.schema.as_ref().map_or_else(
-                    || (format!("{error_type}::{variant}"), "serde_json::Value::Null".to_string()),
-                    |_| (format!("{error_type}::{variant}(value)"), "value".to_string()),
-                );
-                Some(format!(
-                    "            Err({pattern}) => Ok(serde_json::json!({{\"ok\": false, \"status\": {status}, \"body\": {body}}})),\n"
-                ))
-            })
-            .collect::<String>();
-        format!(
-            "        match self.inner.{method}({arguments}).await {{\n            Ok(value) => Ok(serde_json::json!({{\"ok\": true, \"value\": value}})),\n            Err({error_type}::Unexpected {{ status, body }}) => Ok(serde_json::json!({{\"ok\": false, \"status\": status, \"body\": body}})),\n            Err({error_type}::Transport(error)) => Err(to_napi_error(error)),\n{arms}        }}"
-        )
-    } else {
-        format!(
-            "        match self.inner.{method}({arguments}).await {{\n            Ok(value) => Ok(serde_json::json!({{\"ok\": true, \"value\": value}})),\n            Err(SdkError::Http {{ status, body }}) => Ok(serde_json::json!({{\"ok\": false, \"status\": status, \"body\": body}})),\n            Err(error) => Err(to_napi_error(error)),\n        }}"
-        )
-    };
-    format!(
-        "    #[napi]\n    pub async fn {method}(&self{parameters}) -> Result<serde_json::Value> {{\n{body}\n    }}\n\n",
     )
 }
 

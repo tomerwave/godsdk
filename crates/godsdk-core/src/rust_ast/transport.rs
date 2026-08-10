@@ -44,7 +44,12 @@ fn imports() -> TokenStream {
 }
 
 fn client_request() -> TokenStream {
-    let sections = [request_method(), send_once(), handle_http_failure()];
+    let sections = [
+        request_method(),
+        build_request(),
+        send_once(),
+        handle_http_failure(),
+    ];
     quote! {
         #(#sections)*
     }
@@ -52,12 +57,19 @@ fn client_request() -> TokenStream {
 
 fn request_method() -> TokenStream {
     quote! {
+        pub(crate) struct RequestOptions<'a> {
+            pub(crate) query: &'a [(&'a str, String)],
+            pub(crate) headers: &'a [(&'a str, String)],
+            pub(crate) body: Option<String>,
+            pub(crate) requirements: Option<&'a [&'a [AuthRequirement]]>,
+        }
+
         impl Client {
             pub(crate) async fn request(
                 &self,
                 method: Method,
                 path: &str,
-                requirements: Option<&[&[AuthRequirement]]>,
+                options: RequestOptions<'_>,
             ) -> Result<HttpResponse, SdkError> {
                 let url = self
                     .base_url
@@ -66,7 +78,10 @@ fn request_method() -> TokenStream {
                 let can_retry = is_idempotent(&method) || self.retry_policy.retry_non_idempotent;
                 for attempt in 0..=self.retry_policy.max_retries {
                     let may_retry = can_retry && attempt < self.retry_policy.max_retries;
-                    match self.send_once(&method, &url, may_retry, requirements).await {
+                    match self
+                        .send_once(&method, &url, &options, may_retry)
+                        .await
+                    {
                         AttemptOutcome::Response(response) => return Ok(response),
                         AttemptOutcome::Retry(retry_after) => {
                             sleep_before_retry(&self.retry_policy, attempt, retry_after).await;
@@ -81,6 +96,35 @@ fn request_method() -> TokenStream {
     }
 }
 
+fn build_request() -> TokenStream {
+    quote! {
+        impl Client {
+            fn build_request(
+                &self,
+                method: &Method,
+                url: &Url,
+                options: &RequestOptions<'_>,
+            ) -> Result<reqwest::RequestBuilder, SdkError> {
+                let request = apply_auth(
+                    self.http.request(method.clone(), url.clone()),
+                    &self.auth,
+                    options.requirements,
+                )?;
+                let request = options.query.iter().fold(request, |request, (name, value)| {
+                    request.query(&[(name, value)])
+                });
+                let request = options.headers.iter().fold(request, |request, (name, value)| {
+                    request.header(*name, value)
+                });
+                Ok(match options.body.as_deref() {
+                    Some(body) => request.body(body.to_string()),
+                    None => request,
+                })
+            }
+        }
+    }
+}
+
 fn send_once() -> TokenStream {
     quote! {
         impl Client {
@@ -88,14 +132,10 @@ fn send_once() -> TokenStream {
                 &self,
                 method: &Method,
                 url: &Url,
+                options: &RequestOptions<'_>,
                 may_retry: bool,
-                requirements: Option<&[&[AuthRequirement]]>,
             ) -> AttemptOutcome {
-                let request = match apply_auth(
-                    self.http.request(method.clone(), url.clone()),
-                    &self.auth,
-                    requirements,
-                ) {
+                let request = match self.build_request(method, url, options) {
                     Ok(request) => request,
                     Err(error) => return AttemptOutcome::Failure(error),
                 };

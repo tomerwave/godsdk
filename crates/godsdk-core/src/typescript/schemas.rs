@@ -18,6 +18,13 @@ pub(super) fn render_schemas(spec: &ApiIr) -> String {
                 zod_schema(schema, spec)
             ));
         }
+        if let Some(schema) = inline_request_schema(operation) {
+            declarations.push(format!(
+                "export const {}Schema = {};",
+                operation_request_name(operation),
+                zod_schema(schema, spec)
+            ));
+        }
     }
     let mut lines = vec!["import * as z from \"zod\";".to_string(), String::new()];
     lines.extend(
@@ -52,6 +59,12 @@ pub(super) fn render_types(spec: &ApiIr) -> String {
                 "export type {name} = z.infer<typeof {name}Schema>;"
             ));
         }
+        if inline_request_schema(operation).is_some() {
+            let name = operation_request_name(operation);
+            lines.push(format!(
+                "export type {name} = z.infer<typeof {name}Schema>;"
+            ));
+        }
     }
     CodeWriter::from_lines(lines)
 }
@@ -70,6 +83,18 @@ pub(super) fn inline_success_schema(operation: &Operation) -> Option<&Schema> {
         .find(|response| response.status.starts_with('2'))
         .and_then(|response| response.schema.as_ref())
         .filter(|schema| schema_model_name(schema).is_none())
+}
+
+pub(super) fn inline_request_schema(operation: &Operation) -> Option<&Schema> {
+    operation
+        .request_body_details
+        .as_ref()
+        .and_then(|body| body.schema.as_ref())
+        .filter(|schema| schema_model_name(schema).is_none())
+}
+
+pub(super) fn operation_request_name(operation: &Operation) -> String {
+    format!("{}Request", type_identifier(&operation.operation_id))
 }
 
 pub(super) fn operation_response_name(operation: &Operation) -> String {

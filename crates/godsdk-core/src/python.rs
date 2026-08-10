@@ -2,11 +2,14 @@
 mod errors_render;
 #[path = "python/models_render.rs"]
 mod models_render;
+#[path = "python/operations_render.rs"]
+mod operations_render;
 
 use super::code_writer::CodeWriter;
-use crate::{ApiIr, Operation, ParameterLocation, Schema, rust_identifier};
+use crate::{ApiIr, Operation, Schema, rust_identifier};
 use errors_render::{python_error_contract_lines, python_error_file_lines};
 use models_render::render_models;
+use operations_render::{client_method, native_method};
 
 pub(crate) fn render_python_files(spec: &ApiIr) -> Vec<(String, String)> {
     let package = package_name(spec);
@@ -205,54 +208,6 @@ fn client(spec: &ApiIr) -> String {
     CodeWriter::from_lines(lines)
 }
 
-fn client_method(operation: &Operation) -> String {
-    let method = python_identifier(&super::rust_identifier(&operation.operation_id));
-    let parameters = operation
-        .parameters
-        .iter()
-        .filter(|parameter| parameter.location == ParameterLocation::Path)
-        .map(|parameter| format!("{}: str", python_identifier(&parameter.name)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let arguments = operation
-        .parameters
-        .iter()
-        .filter(|parameter| parameter.location == ParameterLocation::Path)
-        .map(|parameter| python_identifier(&parameter.name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let response = operation
-        .responses
-        .iter()
-        .find(|response| response.status.starts_with('2'))
-        .and_then(|response| response.schema.as_ref());
-    let return_type = response
-        .and_then(|schema| {
-            schema_model_name(schema).or_else(|| Some(operation_response_name(operation)))
-        })
-        .unwrap_or_else(|| "None".to_string());
-    let body = if return_type == "None" {
-        format!(
-            "        raw = cast(dict[str, JsonValue], json.loads(self._native.{method}({arguments})))\n        if raw[\"ok\"] is not True:\n            raise SdkHttpError(int(raw[\"status\"]), raw[\"body\"])\n"
-        )
-    } else {
-        let error = has_error_responses(operation)
-            .then(|| format!("{}Error", type_identifier(&operation.operation_id)));
-        let error_handling = error.map_or_else(
-            || "            raise SdkHttpError(int(raw[\"status\"]), raw[\"body\"])".to_string(),
-            |error| {
-                format!(
-                    "            raise {error}.from_native(int(raw[\"status\"]), raw[\"body\"])"
-                )
-            },
-        );
-        format!(
-            "        raw = cast(dict[str, JsonValue], json.loads(self._native.{method}({arguments})))\n        if raw[\"ok\"] is not True:\n{error_handling}\n        return {return_type}.model_validate(raw[\"value\"])\n"
-        )
-    };
-    format!("    def {method}(self, {parameters}) -> {return_type}:\n{body}\n")
-}
-
 fn native_cargo(spec: &ApiIr) -> String {
     format!(
         "[package]\nname = \"{}_python_native\"\nversion = \"0.1.0\"\nedition = \"2024\"\nrust-version = \"1.97\"\n\n[lib]\nname = \"_native\"\ncrate-type = [\"cdylib\"]\n\n[dependencies]\npyo3 = {{ version = \"0.24\", features = [\"abi3-py38\", \"extension-module\"] }}\nserde_json = \"1\"\ntokio = {{ version = \"1\", features = [\"rt\", \"time\"] }}\n{}_sdk = {{ package = \"{}-sdk\", path = \"../../rust\" }}\n",
@@ -266,7 +221,12 @@ fn native_rust(spec: &ApiIr) -> String {
     let methods = spec
         .operations
         .iter()
-        .map(native_method)
+        .map(|operation| {
+            native_method(
+                operation,
+                &format!("{}_sdk", slug(&spec.title).replace('-', "_")),
+            )
+        })
         .collect::<String>();
     let helpers = spec
         .operations
@@ -287,35 +247,6 @@ fn native_rust(spec: &ApiIr) -> String {
     format!(
         "use pyo3::prelude::*;\nuse {}_sdk::{{Client as RustClient, SdkError{error_imports}}};\n\n#[pyclass]\nstruct NativeClient {{\n    inner: RustClient,\n}}\n\n#[pymethods]\nimpl NativeClient {{\n    #[new]\n    fn new(base_url: String) -> PyResult<Self> {{\n        let inner = RustClient::builder(base_url).build().map_err(to_python_error)?;\n        Ok(Self {{ inner }})\n    }}\n{methods}}}\n\nfn encode_success_value(value: serde_json::Value) -> PyResult<String> {{\n    serde_json::to_string(&serde_json::json!({{\"ok\": true, \"value\": value}})).map_err(to_python_error)\n}}\n\nfn encode_http_error(status: u16, body: serde_json::Value) -> PyResult<String> {{\n    serde_json::to_string(&serde_json::json!({{\"ok\": false, \"status\": status, \"body\": body}})).map_err(to_python_error)\n}}\n\n{helpers}#[pymodule]\nfn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {{\n    m.add_class::<NativeClient>()?;\n    Ok(())\n}}\n\nfn to_python_error(error: impl std::fmt::Display) -> PyErr {{\n    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string())\n}}\n",
         slug(&spec.title).replace('-', "_"),
-    )
-}
-
-fn native_method(operation: &Operation) -> String {
-    let method = rust_identifier(&operation.operation_id);
-    let parameters = operation
-        .parameters
-        .iter()
-        .filter(|parameter| parameter.location == ParameterLocation::Path)
-        .map(|parameter| format!(", {}: String", rust_identifier(&parameter.name)))
-        .collect::<String>();
-    let arguments = operation
-        .parameters
-        .iter()
-        .filter(|parameter| parameter.location == ParameterLocation::Path)
-        .map(|parameter| format!("&{}", rust_identifier(&parameter.name)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let body = if has_error_responses(operation) {
-        format!(
-            "        match runtime.block_on(self.inner.{method}({arguments})) {{\n            Ok(value) => encode_success_value(serde_json::to_value(value).map_err(to_python_error)?),\n            Err(error) => encode_{method}_error(error),\n        }}"
-        )
-    } else {
-        format!(
-            "        match runtime.block_on(self.inner.{method}({arguments})) {{\n            Ok(value) => encode_success_value(serde_json::to_value(value).map_err(to_python_error)?),\n            Err(SdkError::Http {{ status, body }}) => encode_http_error(status, serde_json::Value::String(body)),\n            Err(error) => Err(to_python_error(error)),\n        }}"
-        )
-    };
-    format!(
-        "    fn {method}(&self{parameters}) -> PyResult<String> {{\n        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(to_python_error)?;\n{body}\n    }}\n\n"
     )
 }
 

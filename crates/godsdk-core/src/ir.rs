@@ -129,6 +129,7 @@ pub struct Parameter {
     pub name: String,
     pub location: ParameterLocation,
     pub required: bool,
+    pub schema: Schema,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

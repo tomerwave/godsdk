@@ -15,16 +15,39 @@ pub(super) fn render(spec: &ApiIr) -> TokenStream {
     } else {
         quote! {}
     };
+    let response_import = if has_error_operations(spec) {
+        quote! { HttpResponse, }
+    } else {
+        quote! {}
+    };
+    let errors = spec
+        .operations
+        .iter()
+        .filter(|operation| has_error_responses(operation))
+        .map(render_error_contract);
     quote! {
         use reqwest::Method;
 
-        use crate::client::{#auth_import Client, SdkError};
+        use crate::client::{#auth_import #response_import Client, SdkError};
         use crate::models::*;
+
+        #(#errors)*
 
         impl Client {
             #(#methods)*
         }
     }
+}
+
+fn has_error_operations(spec: &ApiIr) -> bool {
+    spec.operations.iter().any(has_error_responses)
+}
+
+fn has_error_responses(operation: &Operation) -> bool {
+    operation
+        .responses
+        .iter()
+        .any(|response| !response.status.starts_with('2'))
 }
 
 fn has_security(spec: &ApiIr) -> bool {
@@ -40,16 +63,142 @@ fn render_operation(operation: &Operation, spec: &ApiIr) -> TokenStream {
     let (arguments, path_arguments) = operation_arguments(operation);
     let path = operation_path(operation, &path_arguments);
     let response_type = response_type(operation);
-    let http_method = method_tokens(operation.method);
-    let decode = response_decode(operation, &response_type);
     let security = operation_security(operation, spec);
+    let error_type = has_error_responses(operation).then(|| error_type_name(operation));
+    let return_type = error_type
+        .as_ref()
+        .map_or_else(|| quote! { SdkError }, |error_type| quote! { #error_type });
+    let body = operation_body(operation, &response_type, error_type.as_ref(), security);
     quote! {
-        pub async fn #method(&self, #(#arguments),*) -> Result<#response_type, SdkError> {
+        pub async fn #method(&self, #(#arguments),*) -> Result<#response_type, #return_type> {
             #path
-            let body = self.request(Method::#http_method, &path, #security).await?;
-            #decode
+            #body
         }
     }
+}
+
+fn operation_body(
+    operation: &Operation,
+    response_type: &TokenStream,
+    error_type: Option<&proc_macro2::Ident>,
+    security: TokenStream,
+) -> TokenStream {
+    let decode = response_decode(operation, response_type, error_type);
+    let http_method = method_tokens(operation.method);
+    let call = quote! { self.request(Method::#http_method, &path, #security).await? };
+    let success = quote! {
+        let body = response.body;
+        #decode
+    };
+    match error_type {
+        Some(error_type) => {
+            let decoder = error_decoder_name(operation);
+            quote! {
+                let response = self.request(Method::#http_method, &path, #security)
+                    .await
+                    .map_err(#error_type::Transport)?;
+                if (200..300).contains(&response.status) {
+                    #success
+                } else {
+                    Err(#decoder(response))
+                }
+            }
+        }
+        None => quote! {
+            let response = #call;
+            if (200..300).contains(&response.status) {
+                #success
+            } else {
+                Err(SdkError::Http { status: response.status, body: response.body })
+            }
+        },
+    }
+}
+
+fn error_type_name(operation: &Operation) -> proc_macro2::Ident {
+    format_ident!("{}Error", rust_type_name(&operation.operation_id))
+}
+
+fn error_decoder_name(operation: &Operation) -> proc_macro2::Ident {
+    format_ident!("decode_{}_error", rust_identifier(&operation.operation_id))
+}
+
+fn render_error_contract(operation: &Operation) -> TokenStream {
+    let error_type = error_type_name(operation);
+    let decoder = error_decoder_name(operation);
+    let variants = operation
+        .responses
+        .iter()
+        .filter(|response| !response.status.starts_with('2'))
+        .map(error_variant);
+    let arms = operation
+        .responses
+        .iter()
+        .filter(|response| !response.status.starts_with('2'))
+        .filter_map(|response| error_decoder_arm(response, &error_type));
+    quote! {
+        #[derive(Debug, thiserror::Error)]
+        pub enum #error_type {
+            #[error("transport error: {0}")]
+            Transport(#[from] SdkError),
+            #(#variants)*
+            #[error("unexpected API response: HTTP {status}")]
+            Unexpected { status: u16, body: String },
+        }
+
+        fn #decoder(response: HttpResponse) -> #error_type {
+            match response.status {
+                #(#arms)*
+                status => #error_type::Unexpected { status, body: response.body },
+            }
+        }
+    }
+}
+
+fn error_variant(response: &crate::Response) -> TokenStream {
+    let variant = status_variant(&response.status);
+    let message = format!("API returned HTTP {}", response.status);
+    match response.schema.as_ref() {
+        Some(schema) => {
+            let schema = schema_tokens(schema);
+            quote! {
+                #[error(#message)]
+                #variant(#schema),
+            }
+        }
+        None => quote! {
+            #[error(#message)]
+            #variant,
+        },
+    }
+}
+
+fn error_decoder_arm(
+    response: &crate::Response,
+    error_type: &proc_macro2::Ident,
+) -> Option<TokenStream> {
+    let status = response.status.parse::<u16>().ok()?;
+    let variant = status_variant(&response.status);
+    let arm = match response.schema.as_ref() {
+        Some(schema) => {
+            let schema = schema_tokens(schema);
+            quote! {
+                #status => match serde_json::from_str::<#schema>(&response.body) {
+                    Ok(value) => #error_type::#variant(value),
+                    Err(_) => #error_type::Unexpected {
+                        status: response.status,
+                        body: response.body,
+                    },
+                },
+            }
+        }
+        None => quote! { #status => #error_type::#variant, },
+    };
+    Some(arm)
+}
+
+fn status_variant(status: &str) -> proc_macro2::Ident {
+    format_ident!("Status{}", rust_type_name(status))
 }
 
 fn operation_security(operation: &Operation, spec: &ApiIr) -> TokenStream {
@@ -148,14 +297,19 @@ fn operation_path(operation: &Operation, path_arguments: &[TokenStream]) -> Toke
     }
 }
 
-fn response_decode(operation: &Operation, response_type: &TokenStream) -> TokenStream {
+fn response_decode(
+    operation: &Operation,
+    response_type: &TokenStream,
+    error_type: Option<&proc_macro2::Ident>,
+) -> TokenStream {
     if is_string_response(operation) {
         quote! { Ok(body) }
     } else {
-        quote! {
-            serde_json::from_str::<#response_type>(&body)
-                .map_err(|error| SdkError::Serialization(error.to_string()))
-        }
+        let serialization = error_type.map_or_else(
+            || quote! { SdkError::Serialization(error.to_string()) },
+            |error_type| quote! { #error_type::Transport(SdkError::Serialization(error.to_string())) },
+        );
+        quote! { serde_json::from_str::<#response_type>(&body).map_err(|error| #serialization) }
     }
 }
 

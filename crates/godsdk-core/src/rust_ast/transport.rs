@@ -16,16 +16,22 @@ fn imports() -> TokenStream {
             AuthRequirement, Client, SdkError,
         };
 
+        pub(crate) struct HttpResponse {
+            pub(crate) status: u16,
+            pub(crate) body: String,
+        }
+
         enum AttemptOutcome {
-            Success(String),
+            Response(HttpResponse),
             Retry(Option<Duration>),
             Failure(SdkError),
         }
 
         impl AttemptOutcome {
             async fn from_body(response: reqwest::Response, limit: usize) -> Self {
+                let status = response.status().as_u16();
                 match read_body(response, limit).await {
-                    Ok(body) => Self::Success(body),
+                    Ok(body) => Self::Response(HttpResponse { status, body }),
                     Err(error) => Self::Failure(error),
                 }
             }
@@ -52,7 +58,7 @@ fn request_method() -> TokenStream {
                 method: Method,
                 path: &str,
                 requirements: Option<&[&[AuthRequirement]]>,
-            ) -> Result<String, SdkError> {
+            ) -> Result<HttpResponse, SdkError> {
                 let url = self
                     .base_url
                     .join(path)
@@ -61,7 +67,7 @@ fn request_method() -> TokenStream {
                 for attempt in 0..=self.retry_policy.max_retries {
                     let may_retry = can_retry && attempt < self.retry_policy.max_retries;
                     match self.send_once(&method, &url, may_retry, requirements).await {
-                        AttemptOutcome::Success(body) => return Ok(body),
+                        AttemptOutcome::Response(response) => return Ok(response),
                         AttemptOutcome::Retry(retry_after) => {
                             sleep_before_retry(&self.retry_policy, attempt, retry_after).await;
                         }
@@ -130,7 +136,7 @@ fn handle_http_failure() -> TokenStream {
                     return AttemptOutcome::Retry(retry_after);
                 }
                 match read_error_body(response, self.max_error_body_bytes).await {
-                    Ok(body) => AttemptOutcome::Failure(SdkError::Http {
+                    Ok(body) => AttemptOutcome::Response(HttpResponse {
                         status: status.as_u16(),
                         body,
                     }),

@@ -67,6 +67,8 @@ project:
 spec:
   path: api/openapi.yaml
   allow_remote_refs: false
+  remote_ref_hosts: []
+  remote_ref_sha256: {}
 
 targets: [rust, python, typescript]
 
@@ -133,6 +135,15 @@ godsdk generate --spec api/openapi.yaml --targets rust,python,typescript --outpu
 godsdk generate --spec api/openapi.yaml --targets python --output . --dry-run
 godsdk generate --spec api/openapi.yaml --targets python --output . --check
 godsdk generate --spec api/openapi.yaml --targets python --output . --prune
+```
+
+Remote `$ref` documents are never fetched implicitly. To use them, provide both an explicit host
+allowlist and a SHA-256 pin for every remote document:
+
+```sh
+godsdk validate --spec api/openapi.yaml \
+  --remote-ref-host schemas.example.com \
+  --remote-ref-pin https://schemas.example.com/models.yaml=<sha256>
 ```
 
 The current scaffold still exposes the earlier `--source`/`--output` placeholder. The new

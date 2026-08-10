@@ -181,7 +181,7 @@ fn request_destructuring(
 
 fn request_destructure(request_type: &syn::Ident, fields: &[syn::Ident]) -> TokenStream {
     if fields.is_empty() {
-        quote! {}
+        quote! { let _ = request; }
     } else {
         quote! { let #request_type { #(#fields),*, .. } = request; }
     }

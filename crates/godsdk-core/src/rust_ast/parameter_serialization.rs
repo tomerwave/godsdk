@@ -8,7 +8,18 @@ pub(super) fn render() -> TokenStream {
         path_helpers(),
         serialization_tests(),
     ];
-    quote! { #(#helpers)* }
+    quote! {
+        #[allow(dead_code)]
+        mod parameter_serialization {
+            use super::*;
+            #(#helpers)*
+        }
+
+        pub(crate) use parameter_serialization::{
+            serialize_cookie_value, serialize_parameter_value,
+            serialize_path_parameter_value,
+        };
+    }
 }
 
 fn value_helpers() -> TokenStream {

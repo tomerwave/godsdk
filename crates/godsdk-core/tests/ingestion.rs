@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use godsdk_core::{
-    ApiIr, ApiSpec, HttpMethod, IngestionError, ParameterLocation, Schema, SecuritySchemeKind,
+    ApiIr, ApiSpec, HttpMethod, IngestionError, ParameterLocation, ParameterStyle, Schema,
+    SecuritySchemeKind,
 };
 
 fn fixture(name: &str) -> PathBuf {
@@ -402,6 +403,74 @@ paths:
         first.operations[0].parameters,
         second.operations[0].parameters
     );
+}
+
+#[test]
+fn normalizes_parameter_serialization_defaults_and_explicit_styles() {
+    let spec = ApiSpec::parse(
+        r#"
+openapi: 3.1.1
+info: {title: Serialization, version: 1.0.0}
+paths:
+  /pets/{pet_id}:
+    get:
+      operationId: getPet
+      parameters:
+        - {name: pet_id, in: path, required: true, schema: {type: string}}
+        - {name: tags, in: query, schema: {type: array, items: {type: string}}, style: pipeDelimited, explode: false}
+        - {name: filter, in: query, schema: {type: object, properties: {name: {type: string}}}, style: deepObject}
+      responses: {"200": {description: ok}}
+"#,
+    )
+    .unwrap_or_else(|error| panic!("document parses: {error}"));
+
+    let parameters = &spec.operations[0].parameters;
+    let parameter = |name| {
+        parameters
+            .iter()
+            .find(|parameter| parameter.name == name)
+            .unwrap_or_else(|| panic!("parameter {name} is present"))
+    };
+    assert_eq!(
+        parameter("pet_id").serialization.style,
+        ParameterStyle::Simple
+    );
+    assert!(!parameter("pet_id").serialization.explode);
+    assert_eq!(
+        parameter("tags").serialization.style,
+        ParameterStyle::PipeDelimited
+    );
+    assert!(!parameter("tags").serialization.explode);
+    assert_eq!(
+        parameter("filter").serialization.style,
+        ParameterStyle::DeepObject
+    );
+    assert!(parameter("filter").serialization.explode);
+}
+
+#[test]
+fn rejects_parameter_serialization_styles_for_their_location() {
+    let error = match ApiSpec::parse(
+        r#"
+openapi: 3.1.1
+info: {title: Invalid Serialization, version: 1.0.0}
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      parameters:
+        - {name: filter, in: header, schema: {type: string}, style: deepObject}
+      responses: {"200": {description: ok}}
+"#,
+    ) {
+        Ok(_) => panic!("invalid parameter serialization was accepted"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        IngestionError::UnsupportedParameterStyle { .. }
+    ));
 }
 
 #[test]

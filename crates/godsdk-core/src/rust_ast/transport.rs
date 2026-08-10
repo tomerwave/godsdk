@@ -2,7 +2,13 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 pub(super) fn render() -> TokenStream {
-    let sections = [imports(), client_request(), body_helpers(), path_encoding()];
+    let sections = [
+        imports(),
+        client_request(),
+        body_helpers(),
+        path_encoding(),
+        super::parameter_serialization::render(),
+    ];
     quote! { #(#sections)* }
 }
 
@@ -57,11 +63,11 @@ fn client_request() -> TokenStream {
 
 fn request_method() -> TokenStream {
     quote! {
-        pub(crate) struct RequestOptions<'a> {
-            pub(crate) query: &'a [(&'a str, String)],
-            pub(crate) headers: &'a [(&'a str, String)],
+        pub(crate) struct RequestOptions {
+            pub(crate) query: Vec<(String, String)>,
+            pub(crate) headers: Vec<(String, String)>,
             pub(crate) body: Option<String>,
-            pub(crate) requirements: Option<&'a [&'a [AuthRequirement]]>,
+            pub(crate) requirements: Option<&'static [&'static [AuthRequirement]]>,
         }
 
         impl Client {
@@ -69,7 +75,7 @@ fn request_method() -> TokenStream {
                 &self,
                 method: Method,
                 path: &str,
-                options: RequestOptions<'_>,
+                options: RequestOptions,
             ) -> Result<HttpResponse, SdkError> {
                 let url = self
                     .base_url
@@ -103,7 +109,7 @@ fn build_request() -> TokenStream {
                 &self,
                 method: &Method,
                 url: &Url,
-                options: &RequestOptions<'_>,
+                options: &RequestOptions,
             ) -> Result<reqwest::RequestBuilder, SdkError> {
                 let request = apply_auth(
                     self.http.request(method.clone(), url.clone()),
@@ -114,7 +120,7 @@ fn build_request() -> TokenStream {
                     request.query(&[(name, value)])
                 });
                 let request = options.headers.iter().fold(request, |request, (name, value)| {
-                    request.header(*name, value)
+                    request.header(name.clone(), value)
                 });
                 Ok(match options.body.as_deref() {
                     Some(body) => request.body(body.to_string()),
@@ -132,7 +138,7 @@ fn send_once() -> TokenStream {
                 &self,
                 method: &Method,
                 url: &Url,
-                options: &RequestOptions<'_>,
+                options: &RequestOptions,
                 may_retry: bool,
             ) -> AttemptOutcome {
                 let request = match self.build_request(method, url, options) {

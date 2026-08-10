@@ -143,21 +143,17 @@ fn native_inputs(operation: &Operation, crate_name: &str) -> (String, String, St
         .iter()
         .map(|input| input.1.clone())
         .collect::<Vec<_>>();
-    let mut arguments = operation
+    let mut fields = operation
         .parameters
         .iter()
         .map(|parameter| {
             let name = rust_identifier(&parameter.name);
-            if parameter.location == ParameterLocation::Path {
-                format!("&{name}")
-            } else {
-                name
-            }
+            format!("{name}: {name}")
         })
         .collect::<Vec<_>>();
     if let Some(input) = native_body_input(operation, crate_name) {
         conversions.push(input.0);
-        arguments.push(input.1);
+        fields.push(format!("request_body: {}", input.1));
     }
     if let Some(body) = operation.request_body_details.as_ref() {
         parameters.insert(
@@ -172,18 +168,18 @@ fn native_inputs(operation: &Operation, crate_name: &str) -> (String, String, St
     (
         parameters.concat(),
         conversions.concat(),
-        arguments.join(", "),
+        format!(
+            "{crate_name}::{}Request {{ {} }}",
+            type_identifier(&operation.operation_id),
+            fields.join(", "),
+        ),
     )
 }
 
 fn native_parameter(parameter: &crate::Parameter, crate_name: &str) -> (String, String, String) {
     let name = rust_identifier(&parameter.name);
     if parameter.location == ParameterLocation::Path {
-        return (
-            format!(", {name}: String"),
-            String::new(),
-            format!("&{name}"),
-        );
+        return (format!(", {name}: String"), String::new(), name);
     }
     let ty = native_rust_schema_type(&parameter.schema, crate_name);
     let signature = if parameter.required {
@@ -212,14 +208,14 @@ fn native_body_input(operation: &Operation, crate_name: &str) -> Option<(String,
             format!(
                 "        let request_body: {ty} = serde_json::from_str(&request_body).map_err(to_python_error)?;\n"
             ),
-            "&request_body".to_string(),
+            "request_body".to_string(),
         ))
     } else {
         Some((
             format!(
                 "        let request_body: Option<{ty}> = request_body.map(|value| serde_json::from_str(&value)).transpose().map_err(to_python_error)?;\n"
             ),
-            "request_body.as_ref()".to_string(),
+            "request_body".to_string(),
         ))
     }
 }

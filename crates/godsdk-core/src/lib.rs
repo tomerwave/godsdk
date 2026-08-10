@@ -18,9 +18,9 @@ mod typescript;
 mod workflow;
 pub use generation::generate;
 pub use ir::{
-    ApiIr, HttpMethod, OAuth2Flow, Operation, Parameter, ParameterLocation, RequestBody,
-    RequiredSecurityScheme, Response, ResponseHeader, SecurityRequirement, SecurityScheme,
-    SecuritySchemeKind,
+    ApiIr, HttpMethod, OAuth2Flow, Operation, Parameter, ParameterLocation, ParameterSerialization,
+    ParameterStyle, RequestBody, RequiredSecurityScheme, Response, ResponseHeader,
+    SecurityRequirement, SecurityScheme, SecuritySchemeKind,
 };
 pub(crate) use rust_ast::render_files as render_rust_files;
 pub(crate) use rust_ast::render_mock_test as render_rust_mock_test;

@@ -11,7 +11,12 @@ fn fixture(name: &str) -> PathBuf {
 fn assert_file_contains(root: &std::path::Path, relative: &str, needles: &[&str]) {
     let content = std::fs::read_to_string(root.join(relative))
         .unwrap_or_else(|error| panic!("generated file is readable: {relative}: {error}"));
-    assert!(needles.iter().all(|needle| content.contains(needle)));
+    for needle in needles {
+        assert!(
+            content.contains(needle),
+            "generated {relative} is missing {needle:?}"
+        );
+    }
 }
 
 #[test]
@@ -29,12 +34,14 @@ fn generated_targets_propagate_typed_request_contracts() {
         root,
         "sdk/rust/src/operations/mod.rs",
         &[
+            "pub struct CreateDocumentRequest",
+            "pub async fn create_document(",
             "dry_run: Option<bool>",
             "x_request_id: String",
-            "request_body: &DocumentInput",
-            "query.push((\"dry_run\", value))",
-            "headers.push((\"X-Request-Id\", x_request_id.to_string()))",
-            "serde_json::to_string(request_body)",
+            "request_body: DocumentInput",
+            "serialize_parameter_value(",
+            "serialize_cookie_value(",
+            "serde_json::to_string(&request_body)",
         ],
     );
     assert_file_contains(

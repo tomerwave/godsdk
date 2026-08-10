@@ -10,6 +10,7 @@ mod mock;
 mod mock_sample;
 mod models;
 mod operations;
+mod parameter_serialization;
 mod request;
 mod transport;
 

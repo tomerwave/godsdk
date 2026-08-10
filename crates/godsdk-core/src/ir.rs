@@ -130,6 +130,24 @@ pub struct Parameter {
     pub location: ParameterLocation,
     pub required: bool,
     pub schema: Schema,
+    pub serialization: ParameterSerialization,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParameterSerialization {
+    pub style: ParameterStyle,
+    pub explode: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParameterStyle {
+    Simple,
+    Form,
+    Label,
+    Matrix,
+    SpaceDelimited,
+    PipeDelimited,
+    DeepObject,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -17,7 +17,11 @@ pub(super) fn render_mod() -> TokenStream {
         pub(crate) use retry::{
             is_idempotent, parse_retry_after, should_retry_status, sleep_before_retry,
         };
-        pub(crate) use transport::{encode_path_segment, HttpResponse, RequestOptions};
+        #[allow(unused_imports)]
+        pub(crate) use transport::{
+            serialize_cookie_value, serialize_parameter_value, serialize_path_parameter_value,
+            HttpResponse, RequestOptions,
+        };
     }
 }
 

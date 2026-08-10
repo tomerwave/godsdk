@@ -9,6 +9,8 @@ pub struct ApiIr {
     pub version: String,
     pub operations: Vec<Operation>,
     pub schemas: BTreeMap<String, Schema>,
+    pub security: Option<Vec<SecurityRequirement>>,
+    pub security_schemes: BTreeMap<String, SecurityScheme>,
     pub references: Vec<String>,
 }
 
@@ -22,6 +24,7 @@ pub struct Operation {
     pub request_body_schema: Option<Schema>,
     pub response_statuses: Vec<String>,
     pub responses: Vec<Response>,
+    pub security: Option<Vec<SecurityRequirement>>,
 }
 
 impl Operation {
@@ -34,6 +37,47 @@ impl Operation {
 pub struct Response {
     pub status: String,
     pub schema: Option<Schema>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityScheme {
+    pub name: String,
+    pub kind: SecuritySchemeKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecuritySchemeKind {
+    Http {
+        scheme: String,
+        bearer_format: Option<String>,
+    },
+    ApiKey {
+        name: String,
+        location: ParameterLocation,
+    },
+    OAuth2 {
+        flows: Vec<OAuth2Flow>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OAuth2Flow {
+    pub flow: String,
+    pub authorization_url: Option<String>,
+    pub token_url: Option<String>,
+    pub refresh_url: Option<String>,
+    pub scopes: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityRequirement {
+    pub schemes: Vec<RequiredSecurityScheme>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequiredSecurityScheme {
+    pub name: String,
+    pub scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

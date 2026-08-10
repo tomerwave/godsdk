@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use godsdk_core::{ApiIr, ApiSpec, HttpMethod, IngestionError, ParameterLocation, Schema};
+use godsdk_core::{
+    ApiIr, ApiSpec, HttpMethod, IngestionError, ParameterLocation, Schema, SecuritySchemeKind,
+};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -46,6 +48,131 @@ fn normalizes_named_schemas_and_typed_operation_shapes() {
     );
     assert!(
         matches!(operation.responses[0].schema, Some(Schema::Reference(ref name)) if name == "Document")
+    );
+}
+
+#[test]
+fn normalizes_security_schemes_and_operation_requirements() {
+    let spec = parse_fixture("security-3.1.yaml");
+
+    assert!(matches!(
+        spec.security_schemes["bearerAuth"].kind,
+        SecuritySchemeKind::Http { ref scheme, ref bearer_format }
+            if scheme == "bearer" && bearer_format.is_none()
+    ));
+    assert!(matches!(
+        spec.security_schemes["apiKeyAuth"].kind,
+        SecuritySchemeKind::ApiKey { ref name, location: ParameterLocation::Header }
+            if name == "X-API-Key"
+    ));
+    assert!(matches!(
+        spec.security_schemes["basicAuth"].kind,
+        SecuritySchemeKind::Http { ref scheme, .. } if scheme == "basic"
+    ));
+    assert!(matches!(
+        spec.security_schemes["oauth2"].kind,
+        SecuritySchemeKind::OAuth2 { ref flows }
+            if flows.len() == 1
+                && flows[0].flow == "authorizationCode"
+                && flows[0].scopes.get("read:resource").map(String::as_str) == Some("Read resource")
+    ));
+
+    let admin = &spec.operations[0];
+    assert_eq!(admin.operation_id, "getAdmin");
+    assert_eq!(admin.security.as_ref().map(Vec::len), Some(2));
+    assert_eq!(
+        admin
+            .security
+            .as_ref()
+            .unwrap_or_else(|| panic!("admin security requirements are present"))[0]
+            .schemes[0]
+            .name,
+        "apiKeyAuth"
+    );
+    assert!(
+        spec.operations
+            .iter()
+            .find(|operation| operation.operation_id == "getPrivate")
+            .unwrap_or_else(|| panic!("private operation exists"))
+            .security
+            .as_ref()
+            .unwrap_or_else(|| panic!("private operation security is present"))[0]
+            .schemes
+            .iter()
+            .any(|scheme| scheme.name == "bearerAuth")
+    );
+}
+
+#[test]
+fn preserves_explicitly_public_operations_and_root_security_defaults() {
+    let spec = ApiSpec::parse(
+        r#"
+openapi: 3.1.1
+info: {title: Security defaults, version: 1.0.0}
+security:
+  - bearerAuth: []
+paths:
+  /public:
+    get:
+      operationId: publicOperation
+      security: []
+      responses: {"200": {description: ok}}
+  /inherited:
+    get:
+      operationId: inheritedOperation
+      responses: {"200": {description: ok}}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer}
+"#,
+    )
+    .unwrap_or_else(|error| panic!("security defaults parse: {error}"));
+
+    assert_eq!(
+        spec.security
+            .as_ref()
+            .unwrap_or_else(|| panic!("root security is present"))
+            .len(),
+        1
+    );
+    assert_eq!(
+        spec.operations
+            .iter()
+            .find(|operation| operation.operation_id == "publicOperation")
+            .unwrap_or_else(|| panic!("public operation exists"))
+            .security,
+        Some(Vec::new())
+    );
+    assert_eq!(
+        spec.operations
+            .iter()
+            .find(|operation| operation.operation_id == "inheritedOperation")
+            .unwrap_or_else(|| panic!("inherited operation exists"))
+            .security,
+        None
+    );
+}
+
+#[test]
+fn rejects_security_requirements_for_unknown_schemes() {
+    let error = match ApiSpec::parse(
+        r#"
+openapi: 3.1.1
+info: {title: Invalid security, version: 1.0.0}
+paths:
+  /private:
+    get:
+      operationId: privateOperation
+      security: [{missingAuth: []}]
+      responses: {"200": {description: ok}}
+"#,
+    ) {
+        Ok(_) => panic!("unknown security schemes must fail"),
+        Err(error) => error,
+    };
+
+    assert!(
+        matches!(error, IngestionError::UnknownSecurityScheme { ref name } if name == "missingAuth")
     );
 }
 

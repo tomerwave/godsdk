@@ -394,12 +394,16 @@ fn write_metadata(
     targets: &[Target],
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
-    write_workflows(root, generated)?;
+    write_workflows(root, targets, generated)?;
     write_project_metadata(root, spec, targets, generated)?;
     write_attention_document(root, generated)
 }
 
-fn write_workflows(root: &Path, generated: &mut Vec<PathBuf>) -> Result<(), GenerationError> {
+fn write_workflows(
+    root: &Path,
+    targets: &[Target],
+    generated: &mut Vec<PathBuf>,
+) -> Result<(), GenerationError> {
     write_file(
         root,
         ".github/workflows/godlint.yml",
@@ -409,15 +413,18 @@ fn write_workflows(root: &Path, generated: &mut Vec<PathBuf>) -> Result<(), Gene
         )),
         generated,
     )?;
-    write_file(
-        root,
-        ".github/workflows/release.yml",
-        include_str!(concat!(
+    let mut release = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/release-workflow.yml"
+    ))
+    .to_string();
+    if targets.contains(&Target::Python) {
+        release.push_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/assets/release-workflow.yml"
-        )),
-        generated,
-    )?;
+            "/assets/python-release-workflow.yml"
+        )));
+    }
+    write_file(root, ".github/workflows/release.yml", &release, generated)?;
     Ok(())
 }
 

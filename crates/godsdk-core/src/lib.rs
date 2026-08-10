@@ -4,11 +4,13 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 mod generation;
-mod render;
+mod rust_ast;
 mod schema;
 mod typescript;
 pub use generation::generate;
-pub(crate) use render::{render_rust_files, render_rust_mock_test, rust_identifier};
+pub(crate) use rust_ast::render_files as render_rust_files;
+pub(crate) use rust_ast::render_mock_test as render_rust_mock_test;
+pub(crate) use rust_ast::rust_identifier;
 pub use schema::Schema;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenerationRequest {
@@ -67,11 +69,21 @@ pub(crate) fn write_file(
             message: error.to_string(),
         })?;
     }
-    fs::write(&path, contents).map_err(|error| GenerationError::Write {
+    write_if_changed(&path, contents).map_err(|error| GenerationError::Write {
         path: path.clone(),
         message: error.to_string(),
     })?;
     generated.push(PathBuf::from(relative));
+    Ok(())
+}
+
+fn write_if_changed(path: &Path, contents: &str) -> Result<(), std::io::Error> {
+    let unchanged = fs::read(path)
+        .map(|existing| existing == contents.as_bytes())
+        .unwrap_or(false);
+    if !unchanged {
+        fs::write(path, contents)?;
+    }
     Ok(())
 }
 
@@ -152,6 +164,26 @@ fn slug(value: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_if_changed;
+
+    #[test]
+    fn write_if_changed_keeps_existing_bytes_for_stable_content() {
+        let directory =
+            tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+        let path = directory.path().join("generated.rs");
+
+        assert!(write_if_changed(&path, "generated").is_ok());
+        assert!(write_if_changed(&path, "generated").is_ok());
+        assert_eq!(
+            std::fs::read_to_string(path)
+                .unwrap_or_else(|error| panic!("generated file is readable: {error}")),
+            "generated"
+        );
+    }
 }
 mod ingestion;
 pub use ingestion::*;

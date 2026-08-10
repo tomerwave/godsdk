@@ -175,3 +175,79 @@ fn refuses_to_overwrite_a_non_empty_output_directory() {
     let request = GenerationRequest::new(fixture("minimal-3.1.yaml"), generated);
     assert!(generate(&request).is_err());
 }
+
+#[test]
+fn equivalent_openapi_ordering_generates_identical_rust_sources() {
+    let first = generate_source(
+        r#"
+openapi: 3.1.1
+info: {title: Ordered, version: 1.0.0}
+paths:
+  /pets/{z}/{a}:
+    get:
+      operationId: getPet
+      parameters:
+        - {name: a, in: path, required: true}
+        - {name: z, in: path, required: true}
+      responses: {"200": {description: ok}}
+"#,
+    );
+    let second = generate_source(
+        r#"
+openapi: 3.1.1
+info: {title: Ordered, version: 1.0.0}
+paths:
+  /pets/{z}/{a}:
+    get:
+      operationId: getPet
+      parameters:
+        - {name: z, in: path, required: true}
+        - {name: a, in: path, required: true}
+      responses: {"200": {description: ok}}
+"#,
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(first.join("sdk/rust/src/operations/mod.rs"))
+            .unwrap_or_else(|error| panic!("first operations are readable: {error}")),
+        std::fs::read_to_string(second.join("sdk/rust/src/operations/mod.rs"))
+            .unwrap_or_else(|error| panic!("second operations are readable: {error}")),
+    );
+}
+
+#[test]
+fn generated_rust_sources_are_parseable_ast_files() {
+    let (_output, request) = generated_fixture("parameters-and-errors-3.1.yaml");
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+    let source_root = request.output_path().join("sdk/rust/src");
+    for path in [
+        "lib.rs",
+        "client/mod.rs",
+        "client/auth.rs",
+        "client/builder.rs",
+        "client/error.rs",
+        "client/retry.rs",
+        "client/transport.rs",
+        "operations/mod.rs",
+        "models/mod.rs",
+        "models/document.rs",
+        "models/problem.rs",
+    ] {
+        let source = std::fs::read_to_string(source_root.join(path))
+            .unwrap_or_else(|error| panic!("generated source {path} is readable: {error}"));
+        let parsed = syn::parse_file(&source);
+        assert!(parsed.is_ok(), "generated source {path} is valid Rust");
+    }
+}
+
+fn generate_source(source: &str) -> PathBuf {
+    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+    let output_path = output.keep();
+    let source_path = output_path.join("openapi.yaml");
+    std::fs::write(&source_path, source)
+        .unwrap_or_else(|error| panic!("source is writable: {error}"));
+    let generated = output_path.join("generated");
+    generate(&GenerationRequest::new(&source_path, &generated))
+        .unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+    generated
+}

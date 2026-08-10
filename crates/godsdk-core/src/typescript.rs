@@ -64,7 +64,7 @@ fn render_schemas(spec: &ApiSpec) -> String {
             ));
         }
     }
-    output
+    format!("{}\n", output.trim_end())
 }
 
 fn render_types(spec: &ApiSpec) -> String {

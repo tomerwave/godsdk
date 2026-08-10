@@ -19,6 +19,14 @@ pub type ApiSpec = ApiIr;
 pub struct GenerationRequest {
     pub source: PathBuf,
     pub output: PathBuf,
+    pub mode: GenerationMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenerationMode {
+    Write,
+    DryRun,
+    Check,
 }
 
 impl GenerationRequest {
@@ -26,6 +34,7 @@ impl GenerationRequest {
         Self {
             source: source.into(),
             output: output.into(),
+            mode: GenerationMode::Write,
         }
     }
 
@@ -35,6 +44,16 @@ impl GenerationRequest {
 
     pub fn output_path(&self) -> &Path {
         &self.output
+    }
+
+    pub fn dry_run(mut self) -> Self {
+        self.mode = GenerationMode::DryRun;
+        self
+    }
+
+    pub fn check(mut self) -> Self {
+        self.mode = GenerationMode::Check;
+        self
     }
 }
 
@@ -57,6 +76,12 @@ pub enum GenerationError {
     Lockfile(String),
     #[error("could not format generated Rust source: {0}")]
     Format(String),
+    #[error("could not read existing GodSDK manifest: {0}")]
+    Manifest(String),
+    #[error("generated file was modified outside GodSDK: {0}")]
+    GeneratedFileConflict(PathBuf),
+    #[error("generated repository is out of date: {0:?}")]
+    OutOfDate(Vec<PathBuf>),
 }
 
 pub(crate) fn write_file(
@@ -126,9 +151,15 @@ pub(crate) fn render_manifest(
     source: &str,
     files: &[PathBuf],
 ) -> Result<String, GenerationError> {
-    let entries = files
+    let mut paths = files
         .iter()
         .filter(|path| path.to_string_lossy() != ".godsdk/manifest.json")
+        .cloned()
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    let entries = paths
+        .iter()
         .map(|path| {
             let contents = fs::read_to_string(root.join(path)).map_err(|error| {
                 GenerationError::Write {

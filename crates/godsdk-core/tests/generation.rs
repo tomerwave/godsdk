@@ -177,6 +177,65 @@ fn refuses_to_overwrite_a_non_empty_output_directory() {
 }
 
 #[test]
+fn regenerates_an_existing_godsdk_repository_without_unrelated_changes() {
+    let (_output, request) = generated_fixture("minimal-3.1.yaml");
+    generate(&request).unwrap_or_else(|error| panic!("initial generation succeeds: {error}"));
+    let before = std::fs::read_to_string(request.output_path().join("README.md"))
+        .unwrap_or_else(|error| panic!("generated README is readable: {error}"));
+
+    generate(&request).unwrap_or_else(|error| panic!("repeat generation succeeds: {error}"));
+
+    assert_eq!(
+        before,
+        std::fs::read_to_string(request.output_path().join("README.md"))
+            .unwrap_or_else(|error| panic!("generated README is readable: {error}"))
+    );
+}
+
+#[test]
+fn refuses_to_overwrite_a_modified_generated_file() {
+    let (_output, request) = generated_fixture("minimal-3.1.yaml");
+    generate(&request).unwrap_or_else(|error| panic!("initial generation succeeds: {error}"));
+    std::fs::write(request.output_path().join("README.md"), "user edits")
+        .unwrap_or_else(|error| panic!("user edit is writable: {error}"));
+
+    let error = match generate(&request) {
+        Ok(_) => panic!("modified generated file must conflict"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("README.md"));
+}
+
+#[test]
+fn dry_run_reports_changes_without_writing_output() {
+    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+    let request =
+        GenerationRequest::new(fixture("minimal-3.1.yaml"), output.path().join("generated"))
+            .dry_run();
+
+    let result = generate(&request).unwrap_or_else(|error| panic!("dry run succeeds: {error}"));
+
+    assert!(!result.files.is_empty());
+    assert!(!request.output_path().exists());
+}
+
+#[test]
+fn check_detects_generated_repository_drift() {
+    let (_output, request) = generated_fixture("minimal-3.1.yaml");
+    generate(&request).unwrap_or_else(|error| panic!("initial generation succeeds: {error}"));
+    std::fs::write(request.output_path().join("README.md"), "drift")
+        .unwrap_or_else(|error| panic!("drift is writable: {error}"));
+
+    let error = match generate(&request.clone().check()) {
+        Ok(_) => panic!("check must detect drift"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("README.md"));
+}
+
+#[test]
 fn equivalent_openapi_ordering_generates_identical_rust_sources() {
     let first = generate_source(
         r#"

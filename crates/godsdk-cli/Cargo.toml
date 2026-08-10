@@ -17,7 +17,7 @@ workspace = true
 
 [dependencies]
 clap.workspace = true
-godsdk-core = { path = "../godsdk-core" }
+godsdk-core = { version = "0.1.1", path = "../godsdk-core" }
 
 [dev-dependencies]
 assert_cmd = "2"

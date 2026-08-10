@@ -42,6 +42,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Document'
+          headers:
+            X-RateLimit-Remaining:
+              required: true
+              schema: {type: integer}
         '400':
           description: Invalid request
           content:

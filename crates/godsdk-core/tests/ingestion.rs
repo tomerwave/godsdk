@@ -37,6 +37,37 @@ fn normalizes_yaml_operations_in_stable_order() {
 }
 
 #[test]
+fn normalizes_typed_request_and_response_contracts() {
+    let spec = parse_fixture("parameters-and-errors-3.1.yaml");
+    let operation = &spec.operations[0];
+    let request_body = operation
+        .request_body_details
+        .as_ref()
+        .unwrap_or_else(|| panic!("request body details are present"));
+
+    assert!(request_body.required);
+    assert_eq!(request_body.content_type, "application/json");
+    assert!(matches!(
+        request_body.schema,
+        Some(Schema::Reference(ref name)) if name == "DocumentInput"
+    ));
+    assert_eq!(
+        operation.responses[0].content_type.as_deref(),
+        Some("application/json")
+    );
+    assert_eq!(operation.responses[0].headers.len(), 1);
+    assert_eq!(
+        operation.responses[0].headers[0].name,
+        "X-RateLimit-Remaining"
+    );
+    assert!(operation.responses[0].headers[0].required);
+    assert!(matches!(
+        operation.responses[1].schema,
+        Some(Schema::Reference(ref name)) if name == "Problem"
+    ));
+}
+
+#[test]
 fn normalizes_named_schemas_and_typed_operation_shapes() {
     let spec = parse_fixture("parameters-and-errors-3.1.yaml");
 

@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 
 mod generation;
 mod generation_transaction;
+mod ingestion_contracts;
 mod ingestion_refs;
 mod ingestion_security;
 mod ir;
@@ -13,8 +14,9 @@ mod schema;
 mod typescript;
 pub use generation::generate;
 pub use ir::{
-    ApiIr, HttpMethod, OAuth2Flow, Operation, Parameter, ParameterLocation, RequiredSecurityScheme,
-    Response, SecurityRequirement, SecurityScheme, SecuritySchemeKind,
+    ApiIr, HttpMethod, OAuth2Flow, Operation, Parameter, ParameterLocation, RequestBody,
+    RequiredSecurityScheme, Response, ResponseHeader, SecurityRequirement, SecurityScheme,
+    SecuritySchemeKind,
 };
 pub(crate) use rust_ast::render_files as render_rust_files;
 pub(crate) use rust_ast::render_mock_test as render_rust_mock_test;

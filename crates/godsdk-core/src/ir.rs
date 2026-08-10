@@ -22,6 +22,7 @@ pub struct Operation {
     pub parameters: Vec<Parameter>,
     pub request_body: bool,
     pub request_body_schema: Option<Schema>,
+    pub request_body_details: Option<RequestBody>,
     pub response_statuses: Vec<String>,
     pub responses: Vec<Response>,
     pub security: Option<Vec<SecurityRequirement>>,
@@ -36,6 +37,22 @@ impl Operation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Response {
     pub status: String,
+    pub schema: Option<Schema>,
+    pub content_type: Option<String>,
+    pub headers: Vec<ResponseHeader>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestBody {
+    pub required: bool,
+    pub content_type: String,
+    pub schema: Option<Schema>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResponseHeader {
+    pub name: String,
+    pub required: bool,
     pub schema: Option<Schema>,
 }
 

@@ -85,7 +85,7 @@ fn zod_schema(schema: &Schema, spec: &ApiIr) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        Schema::Reference(name) => format!("{name}Schema"),
+        Schema::Reference(name) => format!("z.lazy(() => {name}Schema)"),
         Schema::Nullable(inner) => format!("{}.nullable()", zod_schema(inner, spec)),
         Schema::OneOf(values) | Schema::AnyOf(values) => format!(
             "z.union([{}])",

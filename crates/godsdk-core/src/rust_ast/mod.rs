@@ -43,6 +43,7 @@ fn render_lib() -> TokenStream {
 
         pub use client::{Client, ClientBuilder, RetryPolicy, SdkError};
         pub use models::*;
+        pub use operations::*;
     }
 }
 

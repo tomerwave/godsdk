@@ -1,6 +1,6 @@
-use super::{ApiSpec, Operation, Schema};
+use super::{ApiIr, Operation, Schema};
 
-pub(crate) fn render_typescript_files(spec: &ApiSpec) -> Vec<(&'static str, String)> {
+pub(crate) fn render_typescript_files(spec: &ApiIr) -> Vec<(&'static str, String)> {
     vec![
         ("sdk/typescript/package.json", render_package(spec)),
         ("sdk/typescript/tsconfig.json", render_tsconfig()),
@@ -34,7 +34,7 @@ pub(crate) fn render_typescript_files(spec: &ApiSpec) -> Vec<(&'static str, Stri
     ]
 }
 
-fn render_package(spec: &ApiSpec) -> String {
+fn render_package(spec: &ApiIr) -> String {
     format!(
         "{{\n  \"name\": \"{}-sdk\",\n  \"version\": \"0.1.0\",\n  \"type\": \"module\",\n  \"main\": \"./dist/index.js\",\n  \"exports\": {{\".\": \"./dist/index.js\"}},\n  \"scripts\": {{\"build\": \"tsc --noEmit\", \"build:native\": \"napi build --manifest-path native/Cargo.toml --platform --release\", \"test\": \"vitest run\", \"test:native\": \"npm run build:native && npm test\", \"prepublishOnly\": \"napi prepublish -t npm --no-gh-release\"}},\n  \"napi\": {{\"binaryName\": \"{}-sdk\", \"packageName\": \"{}-sdk\", \"targets\": [\"x86_64-unknown-linux-gnu\", \"x86_64-unknown-linux-musl\", \"aarch64-unknown-linux-gnu\", \"aarch64-unknown-linux-musl\", \"x86_64-apple-darwin\", \"aarch64-apple-darwin\", \"x86_64-pc-windows-msvc\"]}},\n  \"dependencies\": {{\"zod\": \"^4.4.3\"}},\n  \"devDependencies\": {{\"@napi-rs/cli\": \"^3.8.3\", \"@types/node\": \"^22.0.0\", \"tsx\": \"^4.20.3\", \"typescript\": \"^5.0.0\", \"vitest\": \"^3.0.0\"}}\n}}\n",
         slug(&spec.title),
@@ -47,7 +47,7 @@ fn render_tsconfig() -> String {
     "{\n  \"compilerOptions\": {\n    \"target\": \"ES2022\",\n    \"module\": \"NodeNext\",\n    \"moduleResolution\": \"NodeNext\",\n    \"strict\": true,\n    \"declaration\": true,\n    \"noUncheckedIndexedAccess\": true,\n    \"exactOptionalPropertyTypes\": true,\n    \"noImplicitOverride\": true,\n    \"outDir\": \"dist\"\n  },\n  \"include\": [\"src/**/*.ts\", \"tests/**/*.ts\"]\n}\n".to_string()
 }
 
-fn render_schemas(spec: &ApiSpec) -> String {
+fn render_schemas(spec: &ApiIr) -> String {
     let mut output = String::from("import * as z from \"zod\";\n\n");
     for (name, schema) in &spec.schemas {
         output.push_str(&format!(
@@ -67,7 +67,7 @@ fn render_schemas(spec: &ApiSpec) -> String {
     format!("{}\n", output.trim_end())
 }
 
-fn render_types(spec: &ApiSpec) -> String {
+fn render_types(spec: &ApiIr) -> String {
     let mut output = String::from("import type * as z from \"zod\";\nimport { ");
     output.push_str(
         &spec
@@ -98,7 +98,7 @@ fn render_errors() -> String {
     "export class SdkValidationError extends Error {\n  readonly operation: string;\n  readonly model: string;\n\n  constructor(operation: string, model: string) {\n    super(`Response validation failed for ${operation} (${model})`);\n    this.name = \"SdkValidationError\";\n    this.operation = operation;\n    this.model = model;\n  }\n}\n".to_string()
 }
 
-fn render_native_loader(spec: &ApiSpec) -> String {
+fn render_native_loader(spec: &ApiIr) -> String {
     let methods = spec
         .operations
         .iter()
@@ -121,7 +121,7 @@ fn render_native_loader(spec: &ApiSpec) -> String {
     )
 }
 
-fn render_native_declaration(spec: &ApiSpec) -> String {
+fn render_native_declaration(spec: &ApiIr) -> String {
     let methods = spec
         .operations
         .iter()
@@ -144,7 +144,7 @@ fn render_native_declaration(spec: &ApiSpec) -> String {
     )
 }
 
-fn render_index(spec: &ApiSpec) -> String {
+fn render_index(spec: &ApiIr) -> String {
     format!(
         "{}{}}}\n",
         render_index_header(spec),
@@ -152,7 +152,7 @@ fn render_index(spec: &ApiSpec) -> String {
     )
 }
 
-fn render_index_header(spec: &ApiSpec) -> String {
+fn render_index_header(spec: &ApiIr) -> String {
     let mut imports = spec
         .schemas
         .keys()
@@ -177,14 +177,14 @@ fn render_index_header(spec: &ApiSpec) -> String {
     )
 }
 
-fn render_index_methods(spec: &ApiSpec) -> String {
+fn render_index_methods(spec: &ApiIr) -> String {
     spec.operations
         .iter()
         .map(|operation| render_operation(operation, spec))
         .collect()
 }
 
-fn render_operation(operation: &Operation, _spec: &ApiSpec) -> String {
+fn render_operation(operation: &Operation, _spec: &ApiIr) -> String {
     let parameters = operation
         .parameters
         .iter()
@@ -231,7 +231,7 @@ fn render_void_operation(operation: &Operation, parameters: &str) -> String {
     )
 }
 
-fn render_validation_test(spec: &ApiSpec) -> String {
+fn render_validation_test(spec: &ApiIr) -> String {
     let Some(name) = spec.schemas.keys().next() else {
         return "import { describe, it } from \"vitest\";\n\ndescribe(\"generated schemas\", () => { it(\"has no models\", () => {}); });\n".to_string();
     };
@@ -240,7 +240,7 @@ fn render_validation_test(spec: &ApiSpec) -> String {
     )
 }
 
-fn render_client_test(spec: &ApiSpec) -> String {
+fn render_client_test(spec: &ApiIr) -> String {
     let Some(operation) = spec.operations.first() else {
         return "import { describe, it } from \"vitest\";\n\ndescribe(\"generated client\", () => { it(\"has no operations\", () => {}); });\n".to_string();
     };
@@ -271,14 +271,14 @@ fn render_client_test(spec: &ApiSpec) -> String {
     )
 }
 
-fn render_readme(spec: &ApiSpec) -> String {
+fn render_readme(spec: &ApiIr) -> String {
     format!(
         "# {} TypeScript SDK\n\nInstall dependencies, then run `npm run test:native`. The command builds the Rust-backed napi-rs addon, starts a local mock API, and verifies runtime response validation with Zod.\n",
         spec.title
     )
 }
 
-fn render_native_cargo(spec: &ApiSpec) -> String {
+fn render_native_cargo(spec: &ApiIr) -> String {
     let crate_name = rust_crate_name(spec);
     format!(
         "[package]\nname = \"{}-typescript-native\"\nversion = \"0.1.0\"\nedition = \"2024\"\nrust-version = \"1.97\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nnapi = {{ version = \"3.12\", features = [\"napi9\", \"tokio_rt\", \"serde-json\"] }}\nnapi-derive = \"3.6\"\nserde_json = \"1\"\n{} = {{ package = \"{}-sdk\", path = \"../../rust\" }}\n",
@@ -292,7 +292,7 @@ fn render_native_package() -> String {
     "{\n  \"type\": \"commonjs\"\n}\n".to_string()
 }
 
-fn render_native_rust(spec: &ApiSpec) -> String {
+fn render_native_rust(spec: &ApiIr) -> String {
     let methods = spec
         .operations
         .iter()
@@ -324,11 +324,11 @@ fn render_native_operation(operation: &Operation) -> String {
     )
 }
 
-fn rust_crate_name(spec: &ApiSpec) -> String {
+fn rust_crate_name(spec: &ApiIr) -> String {
     slug(&spec.title).replace('-', "_")
 }
 
-fn zod_schema(schema: &Schema, spec: &ApiSpec) -> String {
+fn zod_schema(schema: &Schema, spec: &ApiIr) -> String {
     match schema {
         Schema::String { .. } => "z.string()".to_string(),
         Schema::Integer { .. } => "z.number().int()".to_string(),
@@ -363,7 +363,7 @@ fn zod_schema(schema: &Schema, spec: &ApiSpec) -> String {
     }
 }
 
-fn zod_object_schema(schema: &Schema, spec: &ApiSpec) -> String {
+fn zod_object_schema(schema: &Schema, spec: &ApiIr) -> String {
     let Schema::Object {
         properties,
         required,

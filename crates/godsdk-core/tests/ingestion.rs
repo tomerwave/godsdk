@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use godsdk_core::{ApiSpec, HttpMethod, IngestionError, ParameterLocation, Schema};
+use godsdk_core::{ApiIr, ApiSpec, HttpMethod, IngestionError, ParameterLocation, Schema};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -66,6 +66,18 @@ fn records_external_parameter_references_for_resolution() {
         spec.references,
         ["./refs/models.yaml#/components/parameters/UserId"]
     );
+}
+
+#[test]
+fn normalized_documents_expose_a_language_neutral_ir_boundary() {
+    let spec: ApiIr = parse_fixture("minimal-3.1.yaml");
+
+    let parsed = match ApiSpec::from_path(fixture("minimal-3.1.yaml")) {
+        Ok(parsed) => parsed,
+        Err(error) => panic!("fixture parses: {error}"),
+    };
+    assert_eq!(spec, parsed);
+    assert_eq!(spec.operations[0].canonical_key(), "GET /pets/{pet_id}");
 }
 
 #[test]

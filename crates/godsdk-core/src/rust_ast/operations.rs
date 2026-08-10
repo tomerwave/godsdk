@@ -1,11 +1,11 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use crate::{ApiSpec, HttpMethod, Operation, ParameterLocation, Schema};
+use crate::{ApiIr, HttpMethod, Operation, ParameterLocation, Schema};
 
 use super::{literal, rust_identifier, rust_type_name};
 
-pub(super) fn render(spec: &ApiSpec) -> TokenStream {
+pub(super) fn render(spec: &ApiIr) -> TokenStream {
     let methods = spec.operations.iter().map(render_operation);
     quote! {
         use reqwest::Method;

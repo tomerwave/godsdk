@@ -2,11 +2,11 @@ use proc_macro2::Span;
 use quote::{format_ident, quote};
 use syn::{LitByteStr, LitStr};
 
-use crate::{ApiSpec, ParameterLocation};
+use crate::{ApiIr, ParameterLocation};
 
 use super::rust_identifier;
 
-pub(crate) fn render(spec: &ApiSpec) -> String {
+pub(crate) fn render(spec: &ApiIr) -> String {
     let operation = &spec.operations[0];
     let package = format_ident!("{}", format!("{}_sdk", slug(&spec.title).replace('-', "_")));
     let method = format_ident!("{}", rust_identifier(&operation.operation_id));

@@ -5,63 +5,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::Schema;
+use crate::ir::{ApiIr, HttpMethod, Operation, Parameter, ParameterLocation, Response};
 use crate::schema::schema_from_value;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ApiSpec {
-    pub openapi_version: String,
-    pub title: String,
-    pub version: String,
-    pub operations: Vec<Operation>,
-    pub schemas: BTreeMap<String, Schema>,
-    pub references: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Operation {
-    pub operation_id: String,
-    pub method: HttpMethod,
-    pub path: String,
-    pub parameters: Vec<Parameter>,
-    pub request_body: bool,
-    pub request_body_schema: Option<Schema>,
-    pub response_statuses: Vec<String>,
-    pub responses: Vec<Response>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Response {
-    pub status: String,
-    pub schema: Option<Schema>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum HttpMethod {
-    Delete,
-    Get,
-    Head,
-    Options,
-    Patch,
-    Post,
-    Put,
-    Trace,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Parameter {
-    pub name: String,
-    pub location: ParameterLocation,
-    pub required: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParameterLocation {
-    Query,
-    Header,
-    Path,
-    Cookie,
-}
-
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum IngestionError {
     #[error("could not read OpenAPI document {path}: {message}")]
@@ -147,7 +92,7 @@ enum RawParameter {
     },
 }
 
-impl ApiSpec {
+impl ApiIr {
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, IngestionError> {
         let path = path.as_ref();
         let source = fs::read_to_string(path).map_err(|error| IngestionError::Read {
@@ -171,7 +116,7 @@ impl ApiSpec {
     }
 }
 
-fn normalize_document(raw: RawDocument) -> Result<ApiSpec, IngestionError> {
+fn normalize_document(raw: RawDocument) -> Result<ApiIr, IngestionError> {
     let mut operations = Vec::new();
     let mut operation_ids = BTreeSet::new();
     let mut references = BTreeSet::new();
@@ -198,7 +143,7 @@ fn normalize_document(raw: RawDocument) -> Result<ApiSpec, IngestionError> {
             .then(left.method.cmp(&right.method))
     });
 
-    Ok(ApiSpec {
+    Ok(ApiIr {
         openapi_version: raw.openapi,
         title: raw.info.title,
         version: raw.info.version,

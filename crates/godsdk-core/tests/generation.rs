@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use godsdk_core::{GenerationRequest, generate};
+use godsdk_core::{GenerationRequest, Target, generate};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -233,6 +233,20 @@ fn check_detects_generated_repository_drift() {
     };
 
     assert!(error.to_string().contains("README.md"));
+}
+
+#[test]
+fn target_selection_can_generate_the_rust_core_without_typescript() {
+    let (_output, request) = generated_fixture("minimal-3.1.yaml");
+    let request = request.with_targets([Target::Rust]);
+
+    generate(&request).unwrap_or_else(|error| panic!("selected generation succeeds: {error}"));
+
+    assert!(request.output_path().join("sdk/rust").is_dir());
+    assert!(!request.output_path().join("sdk/typescript").exists());
+    let config = std::fs::read_to_string(request.output_path().join(".godsdk/config.yaml"))
+        .unwrap_or_else(|error| panic!("generated config is readable: {error}"));
+    assert!(config.contains("targets: [rust]"));
 }
 
 #[test]

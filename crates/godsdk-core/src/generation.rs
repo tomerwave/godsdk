@@ -7,8 +7,8 @@ use serde::Deserialize;
 use super::typescript::render_typescript_files;
 use super::{
     ApiIr, GenerationError, GenerationMode, GenerationRequest, GenerationResult, IngestionError,
-    digest, render_config, render_manifest, render_readme, render_rust_cargo, render_rust_files,
-    render_rust_mock_test, write_file,
+    Target, digest, render_config, render_manifest, render_readme, render_rust_cargo,
+    render_rust_files, render_rust_mock_test, write_file,
 };
 
 pub fn generate(request: &GenerationRequest) -> Result<GenerationResult, GenerationError> {
@@ -21,7 +21,7 @@ pub fn generate(request: &GenerationRequest) -> Result<GenerationResult, Generat
 fn write_generation(request: &GenerationRequest) -> Result<GenerationResult, GenerationError> {
     let (source, spec) = load_spec(request)?;
     prepare_existing_output(request)?;
-    let generated = generate_repository(request.output_path(), &source, &spec)?;
+    let generated = generate_repository(request.output_path(), &source, &spec, &request.targets)?;
     Ok(GenerationResult { files: generated })
 }
 
@@ -33,7 +33,7 @@ fn prepare_existing_output(request: &GenerationRequest) -> Result<(), Generation
 
 fn plan_generation(request: &GenerationRequest) -> Result<GenerationResult, GenerationError> {
     let (source, spec) = load_spec(request)?;
-    let (staging, planned) = staged_repository(&source, &spec)?;
+    let (staging, planned) = staged_repository(&source, &spec, &request.targets)?;
     let changed = changed_files(request.output_path(), staging.path(), &planned)?;
     if request.mode == GenerationMode::Check {
         return check_changes(changed);
@@ -44,10 +44,11 @@ fn plan_generation(request: &GenerationRequest) -> Result<GenerationResult, Gene
 fn staged_repository(
     source: &str,
     spec: &ApiIr,
+    targets: &[Target],
 ) -> Result<(tempfile::TempDir, Vec<PathBuf>), GenerationError> {
     let staging =
         tempfile::tempdir().map_err(|error| GenerationError::CreateOutput(error.to_string()))?;
-    let planned = generate_repository(staging.path(), source, spec)?;
+    let planned = generate_repository(staging.path(), source, spec, targets)?;
     Ok((staging, planned))
 }
 
@@ -134,12 +135,22 @@ fn generate_repository(
     root: &Path,
     source: &str,
     spec: &ApiIr,
+    targets: &[Target],
 ) -> Result<Vec<PathBuf>, GenerationError> {
     let mut generated = Vec::new();
-    write_generated_content(root, source, spec, &mut generated)?;
-    generate_lockfile(root, &mut generated)?;
-    write_manifest(root, source, &mut generated)?;
+    let output = GenerationOutput {
+        targets,
+        files: &mut generated,
+    };
+    write_generated_content(root, source, spec, output)?;
+    generate_lockfile(root, targets, &mut generated)?;
+    write_manifest(root, source, targets, &mut generated)?;
     Ok(generated)
+}
+
+struct GenerationOutput<'a> {
+    targets: &'a [Target],
+    files: &'a mut Vec<PathBuf>,
 }
 
 fn load_spec(request: &GenerationRequest) -> Result<(String, ApiIr), GenerationError> {
@@ -152,18 +163,21 @@ fn write_generated_content(
     root: &Path,
     source: &str,
     spec: &ApiIr,
-    generated: &mut Vec<PathBuf>,
+    output: GenerationOutput<'_>,
 ) -> Result<(), GenerationError> {
-    write_source_and_rust(root, source, spec, generated)?;
-    write_metadata(root, spec, generated)
+    let targets = output.targets;
+    let files = output.files;
+    write_source_and_rust(root, source, spec, GenerationOutput { targets, files })?;
+    write_metadata(root, spec, targets, files)
 }
 
 fn write_manifest(
     root: &Path,
     source: &str,
+    targets: &[Target],
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
-    let manifest = render_manifest(root, source, generated)?;
+    let manifest = render_manifest(root, source, targets, generated)?;
     write_file(root, ".godsdk/manifest.json", &manifest, generated)
 }
 
@@ -197,11 +211,14 @@ fn write_source_and_rust(
     root: &Path,
     source: &str,
     spec: &ApiIr,
-    generated: &mut Vec<PathBuf>,
+    output: GenerationOutput<'_>,
 ) -> Result<(), GenerationError> {
-    write_source_file(root, source, generated)?;
-    write_rust_files(root, spec, generated)?;
-    write_typescript_files(root, spec, generated)
+    write_source_file(root, source, output.files)?;
+    write_rust_files(root, spec, output.files)?;
+    if output.targets.contains(&Target::TypeScript) {
+        write_typescript_files(root, spec, output.files)?;
+    }
+    Ok(())
 }
 
 fn write_typescript_files(
@@ -301,14 +318,21 @@ fn format_rust_file(path: &Path) -> Result<(), GenerationError> {
     }
 }
 
-fn generate_lockfile(root: &Path, generated: &mut Vec<PathBuf>) -> Result<(), GenerationError> {
+fn generate_lockfile(
+    root: &Path,
+    targets: &[Target],
+    generated: &mut Vec<PathBuf>,
+) -> Result<(), GenerationError> {
     generate_lockfile_at(root, "sdk/rust", "sdk/rust/Cargo.lock", generated)?;
-    generate_lockfile_at(
-        root,
-        "sdk/typescript/native",
-        "sdk/typescript/native/Cargo.lock",
-        generated,
-    )
+    if targets.contains(&Target::TypeScript) {
+        generate_lockfile_at(
+            root,
+            "sdk/typescript/native",
+            "sdk/typescript/native/Cargo.lock",
+            generated,
+        )?;
+    }
+    Ok(())
 }
 
 fn generate_lockfile_at(
@@ -334,10 +358,11 @@ fn generate_lockfile_at(
 fn write_metadata(
     root: &Path,
     spec: &ApiIr,
+    targets: &[Target],
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
     write_workflows(root, generated)?;
-    write_project_metadata(root, spec, generated)?;
+    write_project_metadata(root, spec, targets, generated)?;
     write_attention_document(root, generated)
 }
 
@@ -366,9 +391,15 @@ fn write_workflows(root: &Path, generated: &mut Vec<PathBuf>) -> Result<(), Gene
 fn write_project_metadata(
     root: &Path,
     spec: &ApiIr,
+    targets: &[Target],
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
-    write_file(root, ".godsdk/config.yaml", &render_config(spec), generated)?;
+    write_file(
+        root,
+        ".godsdk/config.yaml",
+        &render_config(spec, targets),
+        generated,
+    )?;
     write_file(root, "godlint.yaml", &render_generated_godlint(), generated)?;
     write_file(
         root,

@@ -193,6 +193,11 @@ The Action must never silently fetch remote references. Remote `$ref` resolution
 requires both an allowlisted host and a SHA-256 pin for each retrieved document. The active policy
 is recorded in generated configuration without storing secrets.
 
+When `spec-url` is used, the Action also requires `spec-sha256` and verifies the downloaded
+specification before invoking the CLI. The Action exposes `changed-files` so calling workflows can
+publish a summary or decide whether to open a pull request. Remote-reference hosts and pins are
+passed through as repeatable CLI options; they are never inferred from the specification URL.
+
 ### Reusable workflow contract
 
 Publish a reusable workflow, for example `.github/workflows/generate-sdk.yml`, that supports both
@@ -201,6 +206,7 @@ Publish a reusable workflow, for example `.github/workflows/generate-sdk.yml`, t
 - `workflow_call` lets a service repository invoke generation from another workflow;
 - `workflow_dispatch` provides the easy manual path from the GitHub Actions UI;
 - inputs select the spec path, targets, output mode, and whether to commit;
+- inputs may select a checksum-verified spec URL and explicit remote-reference policy;
 - default permissions are read-only;
 - `contents: write` is granted only to an explicit commit/push job;
 - generated changes are summarized as an artifact or pull request before commit;

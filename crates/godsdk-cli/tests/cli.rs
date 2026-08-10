@@ -60,6 +60,7 @@ fn generate_creates_a_rust_repository() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(output_path.join("sdk/rust/src/lib.rs").is_file());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("changed sdk/rust/src/lib.rs"));
 }
 
 #[test]

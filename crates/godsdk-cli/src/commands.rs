@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use godsdk_core::{GenerationMode, GenerationRequest, generate};
+use godsdk_core::{GenerationMode, GenerationRequest, Target, generate};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -32,12 +32,16 @@ struct GenerateArgs {
 
     #[arg(long, conflicts_with = "dry_run")]
     check: bool,
+
+    #[arg(long, default_value = "rust,typescript")]
+    targets: String,
 }
 
 pub fn run(cli: Cli) -> Result<(), godsdk_core::GenerationError> {
     let Command::Generate(args) = cli.command;
     let mut request = GenerationRequest::new(args.source, args.output);
     request.mode = generation_mode(args.dry_run, args.check);
+    request = request.with_targets(parse_targets(&args.targets)?);
     let result = generate(&request)?;
     if request.mode == GenerationMode::DryRun {
         for path in result.files {
@@ -45,6 +49,22 @@ pub fn run(cli: Cli) -> Result<(), godsdk_core::GenerationError> {
         }
     }
     Ok(())
+}
+
+fn parse_targets(value: &str) -> Result<Vec<Target>, godsdk_core::GenerationError> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .map(|target| match target {
+            "rust" => Ok(Target::Rust),
+            "python" => Ok(Target::Python),
+            "typescript" => Ok(Target::TypeScript),
+            other => Err(godsdk_core::GenerationError::InvalidTarget(
+                other.to_string(),
+            )),
+        })
+        .collect()
 }
 
 fn generation_mode(dry_run: bool, check: bool) -> GenerationMode {

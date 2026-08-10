@@ -20,6 +20,14 @@ pub struct GenerationRequest {
     pub source: PathBuf,
     pub output: PathBuf,
     pub mode: GenerationMode,
+    pub targets: Vec<Target>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Target {
+    Rust,
+    Python,
+    TypeScript,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +43,7 @@ impl GenerationRequest {
             source: source.into(),
             output: output.into(),
             mode: GenerationMode::Write,
+            targets: vec![Target::Rust, Target::TypeScript],
         }
     }
 
@@ -53,6 +62,19 @@ impl GenerationRequest {
 
     pub fn check(mut self) -> Self {
         self.mode = GenerationMode::Check;
+        self
+    }
+
+    pub fn with_targets<I>(mut self, targets: I) -> Self
+    where
+        I: IntoIterator<Item = Target>,
+    {
+        self.targets = targets.into_iter().collect();
+        if !self.targets.contains(&Target::Rust) {
+            self.targets.push(Target::Rust);
+        }
+        self.targets.sort();
+        self.targets.dedup();
         self
     }
 }
@@ -82,6 +104,8 @@ pub enum GenerationError {
     GeneratedFileConflict(PathBuf),
     #[error("generated repository is out of date: {0:?}")]
     OutOfDate(Vec<PathBuf>),
+    #[error("unknown generation target {0}; expected rust, python, or typescript")]
+    InvalidTarget(String),
 }
 
 pub(crate) fn write_file(
@@ -129,12 +153,20 @@ pub(crate) fn render_rust_cargo(spec: &ApiIr) -> String {
     )
 }
 
-pub(crate) fn render_config(spec: &ApiIr) -> String {
+pub(crate) fn render_config(spec: &ApiIr, targets: &[Target]) -> String {
+    let target_names = targets
+        .iter()
+        .map(|target| target.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
-        "project:\n  name: {}-sdk\n  version: 0.1.0\n\nspec:\n  path: api/openapi.yaml\n  allow_remote_refs: false\n\ntargets: [rust, typescript]\n\nrelease:\n  enabled: true\n  crates_io:\n    enabled: true\n    package: {}-sdk\n  pypi:\n    enabled: false\n    package: {}-sdk\n  npm:\n    enabled: true\n    package: {}-sdk\n    publish_provenance: true\n  github:\n    enabled: true\n    workflow: release.yml\n",
+        "project:\n  name: {}-sdk\n  version: 0.1.0\n\nspec:\n  path: api/openapi.yaml\n  allow_remote_refs: false\n\ntargets: [{}]\n\nrelease:\n  enabled: true\n  crates_io:\n    enabled: true\n    package: {}-sdk\n  pypi:\n    enabled: {}\n    package: {}-sdk\n  npm:\n    enabled: {}\n    package: {}-sdk\n    publish_provenance: true\n  github:\n    enabled: true\n    workflow: release.yml\n",
         slug(&spec.title),
+        target_names,
         slug(&spec.title),
+        targets.contains(&Target::Python),
         slug(&spec.title),
+        targets.contains(&Target::TypeScript),
         slug(&spec.title),
     )
 }
@@ -149,6 +181,7 @@ pub(crate) fn render_readme(spec: &ApiIr) -> String {
 pub(crate) fn render_manifest(
     root: &Path,
     source: &str,
+    targets: &[Target],
     files: &[PathBuf],
 ) -> Result<String, GenerationError> {
     let mut paths = files
@@ -170,17 +203,44 @@ pub(crate) fn render_manifest(
             Ok(format!(
                 "    {{\"path\":\"{}\",\"target\":\"{}\",\"template\":\"rust/vertical-slice\",\"sha256\":\"{}\"}}",
                 path.to_string_lossy(),
-                if path.starts_with("sdk/rust") { "rust" } else if path.starts_with("sdk/typescript") { "typescript" } else { "shared" },
+                target_for_path(path),
                 digest(&contents)
             ))
         })
         .collect::<Result<Vec<_>, GenerationError>>()?
         .join(",\n");
     Ok(format!(
-        "{{\n  \"schema_version\": 1,\n  \"generator_version\": \"0.1.0\",\n  \"template_set_version\": \"0.1.0\",\n  \"input\": {{\"path\": \"api/openapi.yaml\", \"sha256\": \"{}\", \"resolved_refs\": []}},\n  \"targets\": [\"rust\", \"typescript\"],\n  \"governance\": {{\"godlint\": \"0.7.0\", \"godharness\": \"0.1.6\", \"bundle_version\": \"0.1.0\"}},\n  \"files\": [\n{}\n  ]\n}}\n",
+        "{{\n  \"schema_version\": 1,\n  \"generator_version\": \"0.1.0\",\n  \"template_set_version\": \"0.1.0\",\n  \"input\": {{\"path\": \"api/openapi.yaml\", \"sha256\": \"{}\", \"resolved_refs\": []}},\n  \"targets\": [{}],\n  \"governance\": {{\"godlint\": \"0.7.0\", \"godharness\": \"0.1.6\", \"bundle_version\": \"0.1.0\"}},\n  \"files\": [\n{}\n  ]\n}}\n",
         digest(source),
+        targets
+            .iter()
+            .map(|target| format!("\"{}\"", target.as_str()))
+            .collect::<Vec<_>>()
+            .join(", "),
         entries
     ))
+}
+
+impl Target {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rust => "rust",
+            Self::Python => "python",
+            Self::TypeScript => "typescript",
+        }
+    }
+}
+
+fn target_for_path(path: &Path) -> &'static str {
+    if path.starts_with("sdk/rust") {
+        "rust"
+    } else if path.starts_with("sdk/python") {
+        "python"
+    } else if path.starts_with("sdk/typescript") {
+        "typescript"
+    } else {
+        "shared"
+    }
 }
 
 fn slug(value: &str) -> String {

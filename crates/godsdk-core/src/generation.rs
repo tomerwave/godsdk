@@ -2,14 +2,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Deserialize;
-
+use super::generation_transaction::{
+    ApplyOptions, ExistingManifest, apply_staged_repository, changed_files, check_changes,
+    read_existing_manifest, stale_paths, validate_existing_files,
+};
 use super::python::render_python_files;
 use super::typescript::render_typescript_files;
 use super::{
     ApiIr, GenerationError, GenerationMode, GenerationRequest, GenerationResult, IngestionError,
-    Target, digest, render_config, render_manifest, render_readme, render_rust_cargo,
-    render_rust_files, render_rust_mock_test, write_file,
+    Target, render_config, render_manifest, render_readme, render_rust_cargo, render_rust_files,
+    render_rust_mock_test, write_file,
 };
 
 pub fn generate(request: &GenerationRequest) -> Result<GenerationResult, GenerationError> {
@@ -20,26 +22,53 @@ pub fn generate(request: &GenerationRequest) -> Result<GenerationResult, Generat
 }
 
 fn write_generation(request: &GenerationRequest) -> Result<GenerationResult, GenerationError> {
-    let (source, spec) = load_spec(request)?;
-    prepare_existing_output(request)?;
-    let generated = generate_repository(request.output_path(), &source, &spec, &request.targets)?;
-    Ok(GenerationResult { files: generated })
-}
-
-fn prepare_existing_output(request: &GenerationRequest) -> Result<(), GenerationError> {
-    let existing_manifest = read_existing_manifest(request.output_path())?;
-    prepare_output(request, existing_manifest.is_some())?;
-    validate_existing_files(request.output_path(), existing_manifest.as_ref())
+    let (existing_manifest, staging, planned) = staged_request(request)?;
+    let changed = apply_staged_repository(
+        request.output_path(),
+        staging.path(),
+        &planned,
+        ApplyOptions {
+            existing_manifest: existing_manifest.as_ref(),
+            enabled: request.prune,
+        },
+    )?;
+    Ok(GenerationResult { files: changed })
 }
 
 fn plan_generation(request: &GenerationRequest) -> Result<GenerationResult, GenerationError> {
-    let (source, spec) = load_spec(request)?;
-    let (staging, planned) = staged_repository(&source, &spec, &request.targets)?;
-    let changed = changed_files(request.output_path(), staging.path(), &planned)?;
+    let (existing_manifest, staging, planned) = staged_request(request)?;
+    let mut changed = changed_files(request.output_path(), staging.path(), &planned)?;
+    if request.prune {
+        changed.extend(stale_paths(
+            existing_manifest.as_ref(),
+            &planned,
+            request.output_path(),
+        ));
+        changed.sort();
+        changed.dedup();
+    }
     if request.mode == GenerationMode::Check {
         return check_changes(changed);
     }
     Ok(GenerationResult { files: changed })
+}
+
+fn staged_request(
+    request: &GenerationRequest,
+) -> Result<(Option<ExistingManifest>, tempfile::TempDir, Vec<PathBuf>), GenerationError> {
+    let existing_manifest = prepare_existing_generation(request)?;
+    let (source, spec) = load_spec(request)?;
+    let (staging, planned) = staged_repository(&source, &spec, &request.targets)?;
+    Ok((existing_manifest, staging, planned))
+}
+
+fn prepare_existing_generation(
+    request: &GenerationRequest,
+) -> Result<Option<ExistingManifest>, GenerationError> {
+    let existing_manifest = read_existing_manifest(request.output_path())?;
+    prepare_output(request, existing_manifest.is_some())?;
+    validate_existing_files(request.output_path(), existing_manifest.as_ref())?;
+    Ok(existing_manifest)
 }
 
 fn staged_repository(
@@ -51,85 +80,6 @@ fn staged_repository(
         tempfile::tempdir().map_err(|error| GenerationError::CreateOutput(error.to_string()))?;
     let planned = generate_repository(staging.path(), source, spec, targets)?;
     Ok((staging, planned))
-}
-
-fn changed_files(
-    output: &Path,
-    staging: &Path,
-    planned: &[PathBuf],
-) -> Result<Vec<PathBuf>, GenerationError> {
-    planned
-        .iter()
-        .filter_map(|relative| match file_changed(output, staging, relative) {
-            Ok(true) => Some(Ok(relative.clone())),
-            Ok(false) => None,
-            Err(error) => Some(Err(error)),
-        })
-        .collect()
-}
-
-fn file_changed(output: &Path, staging: &Path, relative: &Path) -> Result<bool, GenerationError> {
-    let expected = fs::read(staging.join(relative)).map_err(|error| GenerationError::Write {
-        path: relative.to_path_buf(),
-        message: error.to_string(),
-    })?;
-    let actual = fs::read(output.join(relative)).ok();
-    Ok(actual.as_deref() != Some(expected.as_slice()))
-}
-
-fn check_changes(changed: Vec<PathBuf>) -> Result<GenerationResult, GenerationError> {
-    if changed.is_empty() {
-        Ok(GenerationResult { files: changed })
-    } else {
-        Err(GenerationError::OutOfDate(changed))
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct ExistingManifest {
-    files: Vec<ExistingManifestFile>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ExistingManifestFile {
-    path: PathBuf,
-    sha256: String,
-}
-
-fn read_existing_manifest(root: &Path) -> Result<Option<ExistingManifest>, GenerationError> {
-    let path = root.join(".godsdk/manifest.json");
-    if !path.is_file() {
-        return Ok(None);
-    }
-    let contents =
-        fs::read_to_string(path).map_err(|error| GenerationError::Manifest(error.to_string()))?;
-    serde_json::from_str(&contents)
-        .map(Some)
-        .map_err(|error| GenerationError::Manifest(error.to_string()))
-}
-
-fn validate_existing_files(
-    root: &Path,
-    manifest: Option<&ExistingManifest>,
-) -> Result<(), GenerationError> {
-    let Some(manifest) = manifest else {
-        return Ok(());
-    };
-    for file in &manifest.files {
-        if let Some(error) = existing_file_conflict(root, file) {
-            return Err(error);
-        }
-    }
-    Ok(())
-}
-
-fn existing_file_conflict(root: &Path, file: &ExistingManifestFile) -> Option<GenerationError> {
-    if file.path == Path::new("api/openapi.yaml") {
-        return None;
-    }
-    let contents = fs::read_to_string(root.join(&file.path)).ok()?;
-    (digest(&contents) != file.sha256)
-        .then(|| GenerationError::GeneratedFileConflict(file.path.clone()))
 }
 
 fn generate_repository(
@@ -204,8 +154,13 @@ fn prepare_output(
     {
         return Err(GenerationError::OutputExists(request.output.clone()));
     }
-    fs::create_dir_all(request.output_path())
-        .map_err(|error| GenerationError::CreateOutput(error.to_string()))
+    if let Some(parent) = request.output_path().parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .map_err(|error| GenerationError::CreateOutput(error.to_string()))?;
+    }
+    Ok(())
 }
 
 fn write_source_and_rust(

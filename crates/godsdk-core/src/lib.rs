@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 mod generation;
+mod generation_transaction;
 mod ir;
 mod rust_ast;
 mod schema;
@@ -21,6 +22,7 @@ pub struct GenerationRequest {
     pub output: PathBuf,
     pub mode: GenerationMode,
     pub targets: Vec<Target>,
+    pub prune: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -44,6 +46,7 @@ impl GenerationRequest {
             output: output.into(),
             mode: GenerationMode::Write,
             targets: vec![Target::Rust, Target::TypeScript],
+            prune: false,
         }
     }
 
@@ -62,6 +65,11 @@ impl GenerationRequest {
 
     pub fn check(mut self) -> Self {
         self.mode = GenerationMode::Check;
+        self
+    }
+
+    pub fn prune(mut self) -> Self {
+        self.prune = true;
         self
     }
 

@@ -283,6 +283,72 @@ fn python_target_generates_typed_pydantic_models_and_pyo3_binding() {
 }
 
 #[test]
+fn prune_removes_stale_generated_targets_but_preserves_user_files() {
+    let (_output, request) = generated_fixture("minimal-3.1.yaml");
+    generate(&request).unwrap_or_else(|error| panic!("initial generation succeeds: {error}"));
+    let user_file = request.output_path().join("notes.md");
+    std::fs::write(&user_file, "keep this")
+        .unwrap_or_else(|error| panic!("user file is writable: {error}"));
+
+    let rust_only = request.clone().with_targets([Target::Rust]).prune();
+    generate(&rust_only).unwrap_or_else(|error| panic!("pruned generation succeeds: {error}"));
+
+    assert!(!request.output_path().join("sdk/typescript").exists());
+    assert_eq!(
+        std::fs::read_to_string(user_file)
+            .unwrap_or_else(|error| panic!("user file remains readable: {error}")),
+        "keep this"
+    );
+    let manifest = std::fs::read_to_string(request.output_path().join(".godsdk/manifest.json"))
+        .unwrap_or_else(|error| panic!("manifest is readable: {error}"));
+    let manifest: serde_json::Value = serde_json::from_str(&manifest)
+        .unwrap_or_else(|error| panic!("manifest is valid JSON: {error}"));
+    assert_eq!(manifest["targets"], serde_json::json!(["rust"]));
+}
+
+#[test]
+fn prune_refuses_to_delete_a_modified_stale_generated_file() {
+    let (_output, request) = generated_fixture("minimal-3.1.yaml");
+    generate(&request).unwrap_or_else(|error| panic!("initial generation succeeds: {error}"));
+    let stale_file = request.output_path().join("sdk/typescript/package.json");
+    std::fs::write(&stale_file, "user-owned now")
+        .unwrap_or_else(|error| panic!("stale file is writable: {error}"));
+
+    let error = match generate(&request.clone().with_targets([Target::Rust]).prune()) {
+        Ok(_) => panic!("modified stale generated files must block pruning"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("package.json"));
+    assert!(stale_file.is_file());
+}
+
+#[test]
+fn rejects_an_unsupported_manifest_before_updating_output() {
+    let (_output, request) = generated_fixture("minimal-3.1.yaml");
+    generate(&request).unwrap_or_else(|error| panic!("initial generation succeeds: {error}"));
+    let readme = request.output_path().join("README.md");
+    let before = std::fs::read(&readme)
+        .unwrap_or_else(|error| panic!("generated README is readable: {error}"));
+    std::fs::write(
+        request.output_path().join(".godsdk/manifest.json"),
+        r#"{"schema_version":999,"files":[]}"#,
+    )
+    .unwrap_or_else(|error| panic!("manifest is writable: {error}"));
+
+    let error = match generate(&request) {
+        Ok(_) => panic!("unsupported manifest must be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("manifest"));
+    assert_eq!(
+        before,
+        std::fs::read(readme).unwrap_or_else(|error| panic!("README is readable: {error}"))
+    );
+}
+
+#[test]
 fn equivalent_openapi_ordering_generates_identical_rust_sources() {
     let first = generate_source(
         r#"

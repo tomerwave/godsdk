@@ -1,4 +1,9 @@
+#[path = "python/errors_render.rs"]
+mod errors_render;
+
+use super::code_writer::CodeWriter;
 use crate::{ApiIr, Operation, ParameterLocation, Schema, rust_identifier};
+use errors_render::{python_error_contract_lines, python_error_file_lines};
 
 pub(crate) fn render_python_files(spec: &ApiIr) -> Vec<(String, String)> {
     let package = package_name(spec);
@@ -34,11 +39,22 @@ pub(crate) fn render_python_files(spec: &ApiIr) -> Vec<(String, String)> {
 }
 
 fn pyproject(spec: &ApiIr, package: &str) -> String {
-    format!(
-        "[build-system]\nrequires = [\"maturin>=1.8,<2\"]\nbuild-backend = \"maturin\"\n\n[project]\nname = \"{}-sdk\"\nversion = \"0.1.0\"\ndependencies = [\"pydantic>=2.0,<3\"]\n\n[tool.maturin]\nmanifest-path = \"native/Cargo.toml\"\nmodule-name = \"{}._native\"\npython-source = \".\"\n",
-        slug(&spec.title),
-        package,
-    )
+    let project = slug(&spec.title);
+    CodeWriter::from_lines([
+        "[build-system]".to_string(),
+        "requires = [\"maturin>=1.8,<2\"]".to_string(),
+        "build-backend = \"maturin\"".to_string(),
+        String::new(),
+        "[project]".to_string(),
+        format!("name = \"{project}-sdk\""),
+        "version = \"0.1.0\"".to_string(),
+        "dependencies = [\"pydantic>=2.0,<3\"]".to_string(),
+        String::new(),
+        "[tool.maturin]".to_string(),
+        "manifest-path = \"native/Cargo.toml\"".to_string(),
+        format!("module-name = \"{package}._native\""),
+        "python-source = \".\"".to_string(),
+    ])
 }
 
 fn init_file(spec: &ApiIr) -> String {
@@ -74,9 +90,13 @@ fn init_file(spec: &ApiIr) -> String {
         .cloned()
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
-        "from .client import Client\nfrom .errors import {error_imports}\nfrom .models import {imports}\n\n__all__ = {exports:?}\n"
-    )
+    CodeWriter::from_lines([
+        "from .client import Client".to_string(),
+        format!("from .errors import {error_imports}"),
+        format!("from .models import {imports}"),
+        String::new(),
+        format!("__all__ = {exports:?}"),
+    ])
 }
 
 fn has_error_responses(operation: &Operation) -> bool {
@@ -96,17 +116,15 @@ fn errors(spec: &ApiIr) -> String {
         .filter_map(|response| response.schema.as_ref().and_then(schema_model_name))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
-        .map(|name| format!("from .models import {name}\n"))
-        .collect::<String>();
+        .map(|name| format!("from .models import {name}"))
+        .collect::<Vec<_>>();
     let contracts = spec
         .operations
         .iter()
         .filter(|operation| has_error_responses(operation))
         .map(error_contract)
         .collect::<String>();
-    format!(
-        "from __future__ import annotations\n\nfrom typing import TypeAlias\n\n{imports}\nJsonValue: TypeAlias = None | bool | int | float | str | list[\"JsonValue\"] | dict[str, \"JsonValue\"]\n\nclass SdkHttpError(Exception):\n    status: int\n    body: JsonValue\n\n    def __init__(self, status: int, body: JsonValue) -> None:\n        super().__init__(f\"API returned HTTP {{status}}\")\n        self.status = status\n        self.body = body\n\n{contracts}"
-    )
+    CodeWriter::from_lines(python_error_file_lines(&imports, &contracts))
 }
 
 fn error_contract(operation: &Operation) -> String {
@@ -123,11 +141,14 @@ fn error_contract(operation: &Operation) -> String {
                 .as_ref()
                 .and_then(schema_model_name)
                 .unwrap_or_else(|| "JsonValue".to_string());
-            Some(format!(
-                "class {operation_name}Status{status}Error({name}):\n    body: {body_type}\n\n"
-            ))
+            Some(vec![
+                format!("class {operation_name}Status{status}Error({name}):"),
+                format!("    body: {body_type}"),
+                String::new(),
+            ])
         })
-        .collect::<String>();
+        .flatten()
+        .collect::<Vec<_>>();
     let arms = operation
         .responses
         .iter()
@@ -144,14 +165,14 @@ fn error_contract(operation: &Operation) -> String {
                         format!("{operation_name}Status{status}Error(status, {model}.model_validate(body))")
                     },
                 );
-            Some(format!(
-                "        if status == {status}:\n            return {constructor}\n"
-            ))
+            Some(vec![
+                format!("        if status == {status}:"),
+                format!("            return {constructor}"),
+            ])
         })
-        .collect::<String>();
-    format!(
-        "class {name}(SdkHttpError):\n    @classmethod\n    def from_native(cls, status: int, body: JsonValue) -> {name}:\n{arms}        return cls(status, body)\n\n{subclasses}"
-    )
+        .flatten()
+        .collect::<Vec<_>>();
+    CodeWriter::from_lines(python_error_contract_lines(&name, &arms, &subclasses))
 }
 
 fn models(spec: &ApiIr) -> String {
@@ -200,9 +221,22 @@ fn client(spec: &ApiIr) -> String {
         .iter()
         .map(client_method)
         .collect::<String>();
-    format!(
-        "from __future__ import annotations\n\nimport json\nfrom typing import cast\nfrom . import _native\nfrom .errors import *\nfrom .models import *\n\nclass Client:\n    def __init__(self, base_url: str) -> None:\n        self._native = _native.NativeClient(base_url)\n\n{methods}"
-    )
+    let mut lines = vec![
+        "from __future__ import annotations".to_string(),
+        String::new(),
+        "import json".to_string(),
+        "from typing import cast".to_string(),
+        "from . import _native".to_string(),
+        "from .errors import *".to_string(),
+        "from .models import *".to_string(),
+        String::new(),
+        "class Client:".to_string(),
+        "    def __init__(self, base_url: str) -> None:".to_string(),
+        "        self._native = _native.NativeClient(base_url)".to_string(),
+        String::new(),
+    ];
+    lines.extend(methods.trim_end().lines().map(str::to_string));
+    CodeWriter::from_lines(lines)
 }
 
 fn client_method(operation: &Operation) -> String {

@@ -17,7 +17,14 @@
           python-version: '3.12'
       - name: Install build tooling
         run: python -m pip install --upgrade maturin
-      - name: Publish Python SDK
+      - name: Build Python wheel
         working-directory: sdk/python
-        run: maturin publish --manifest-path native/Cargo.toml
+        run: maturin build --manifest-path native/Cargo.toml --release --out dist
+      - name: Validate Python package metadata
+        run: |
+          python -m pip install --upgrade twine
+          python -m twine check sdk/python/dist/*
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: sdk/python/dist
 # GODSDK_TARGET: python:end

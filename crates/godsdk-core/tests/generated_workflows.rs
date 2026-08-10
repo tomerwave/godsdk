@@ -66,3 +66,26 @@ fn generated_repository_includes_godharness_adapter_wiring() {
             .is_file()
     );
 }
+
+#[test]
+fn generated_release_workflow_uses_trusted_publishing_and_napi_ordering() {
+    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+    let request =
+        GenerationRequest::new(fixture("minimal-3.1.yaml"), output.path().join("generated"))
+            .with_targets([Target::Rust, Target::Python, Target::TypeScript]);
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+
+    let release =
+        std::fs::read_to_string(request.output_path().join(".github/workflows/release.yml"))
+            .unwrap_or_else(|error| panic!("release workflow is readable: {error}"));
+    assert!(
+        release.contains("pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33")
+    );
+    assert!(release.contains("packages-dir: sdk/python/dist"));
+    assert!(
+        release
+            .contains("npx napi prepublish -t npm --no-gh-release --root-publisher npm --dry-run")
+    );
+    assert!(release.contains("npm publish --access public --provenance"));
+    assert!(release.contains("id-token: write"));
+}

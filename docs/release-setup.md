@@ -18,5 +18,6 @@ Before the first version tag, configure these external services:
   available to the repository.
 
 For generated TypeScript SDKs, reserve the npm root and platform package names and configure npm
-trusted publishing separately. A future generated Python target should use PyPI trusted
-publishing. These are intentionally not placed in the CLI release workflow.
+trusted publishing separately. Generated Python SDKs use the pinned PyPI trusted-publishing
+workflow, so reserve the package name and configure its PyPI publisher separately. These external
+registrations are intentionally not performed by the CLI.

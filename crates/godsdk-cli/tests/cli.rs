@@ -16,7 +16,8 @@ fn version_reports_the_workspace_version() {
     let output = run(&["--version"]);
 
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("godsdk 0.1.0"));
+    let expected = format!("godsdk {}", env!("CARGO_PKG_VERSION"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains(&expected));
 }
 
 #[test]

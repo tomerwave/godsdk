@@ -450,7 +450,7 @@ paths:
 
 #[test]
 fn rejects_parameter_serialization_styles_for_their_location() {
-    let error = ApiSpec::parse(
+    let error = match ApiSpec::parse(
         r#"
 openapi: 3.1.1
 info: {title: Invalid Serialization, version: 1.0.0}
@@ -462,8 +462,10 @@ paths:
         - {name: filter, in: header, schema: {type: string}, style: deepObject}
       responses: {"200": {description: ok}}
 "#,
-    )
-    .unwrap_err();
+    ) {
+        Ok(_) => panic!("invalid parameter serialization was accepted"),
+        Err(error) => error,
+    };
 
     assert!(matches!(
         error,

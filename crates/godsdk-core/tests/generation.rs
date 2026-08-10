@@ -288,7 +288,11 @@ fn python_target_generates_typed_pydantic_models_and_pyo3_binding() {
     assert!(models.contains("BaseModel") && models.contains("ConfigDict"));
     assert!(!models.contains("Any"));
     assert!(client.contains("model_validate"));
+    let native_cargo =
+        std::fs::read_to_string(request.output_path().join("sdk/python/native/Cargo.toml"))
+            .unwrap_or_else(|error| panic!("python native manifest is readable: {error}"));
     assert!(native.contains("#[pymodule]") && native.contains("RustClient"));
+    assert!(native_cargo.contains("extension-module"));
     assert!(release.contains("Publish Python SDK to PyPI"));
 }
 

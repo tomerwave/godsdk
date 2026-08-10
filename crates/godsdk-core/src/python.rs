@@ -147,7 +147,7 @@ fn client_method(operation: &Operation) -> String {
 
 fn native_cargo(spec: &ApiIr) -> String {
     format!(
-        "[package]\nname = \"{}_python_native\"\nversion = \"0.1.0\"\nedition = \"2024\"\nrust-version = \"1.97\"\n\n[lib]\nname = \"_native\"\ncrate-type = [\"cdylib\"]\n\n[dependencies]\npyo3 = {{ version = \"0.24\", features = [\"abi3-py38\"] }}\nserde_json = \"1\"\ntokio = {{ version = \"1\", features = [\"rt\", \"time\"] }}\n{}_sdk = {{ package = \"{}-sdk\", path = \"../../rust\" }}\n",
+        "[package]\nname = \"{}_python_native\"\nversion = \"0.1.0\"\nedition = \"2024\"\nrust-version = \"1.97\"\n\n[lib]\nname = \"_native\"\ncrate-type = [\"cdylib\"]\n\n[dependencies]\npyo3 = {{ version = \"0.24\", features = [\"abi3-py38\", \"extension-module\"] }}\nserde_json = \"1\"\ntokio = {{ version = \"1\", features = [\"rt\", \"time\"] }}\n{}_sdk = {{ package = \"{}-sdk\", path = \"../../rust\" }}\n",
         slug(&spec.title),
         slug(&spec.title).replace('-', "_"),
         slug(&spec.title),

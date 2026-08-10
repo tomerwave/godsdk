@@ -4,6 +4,7 @@ use syn::{LitByteStr, LitStr};
 
 use crate::{ApiIr, ParameterLocation, SecuritySchemeKind};
 
+use super::mock_sample::{marker, success_body};
 use super::rust_identifier;
 
 pub(crate) fn render(spec: &ApiIr) -> String {
@@ -16,9 +17,11 @@ pub(crate) fn render(spec: &ApiIr) -> String {
         .filter(|parameter| parameter.location == ParameterLocation::Path)
         .map(|_| quote! { "pet-1" })
         .collect::<Vec<_>>();
+    let success_body = success_body(spec, operation);
     let literals = MockLiterals {
         method_path: LitStr::new(&render_method_path(&operation.path), Span::call_site()),
-        success: response_bytes(b"{\"id\":\"pet-1\",\"name\":\"Fluffy\"}"),
+        success: response_bytes(&success_body),
+        success_marker: LitStr::new(&marker(&success_body), Span::call_site()),
     };
     let auth = mock_auth(spec, operation);
     let context = MockContext {
@@ -29,7 +32,12 @@ pub(crate) fn render(spec: &ApiIr) -> String {
     };
     let imports = main_imports();
     let main = main_test(&context, &literals);
-    let retry = retry_module(&context, &literals.success, &auth.assertion);
+    let retry = retry_module(
+        &context,
+        &literals.success,
+        &literals.success_marker,
+        &auth.assertion,
+    );
     let tokens = quote! {
         #imports
         #main
@@ -43,6 +51,7 @@ pub(crate) fn render(spec: &ApiIr) -> String {
 struct MockLiterals {
     method_path: LitStr,
     success: LitByteStr,
+    success_marker: LitStr,
 }
 
 struct MockAuth {
@@ -151,7 +160,7 @@ fn main_imports() -> proc_macro2::TokenStream {
 
 fn main_test(context: &MockContext<'_>, literals: &MockLiterals) -> proc_macro2::TokenStream {
     let server = main_server(&literals.method_path, &literals.success, context.auth);
-    let call = main_call(context.method, context.arguments);
+    let call = main_call(context.method, context.arguments, &literals.success_marker);
     let package = context.package;
     quote! {
         use #package::Client;
@@ -200,22 +209,24 @@ fn main_server(
 fn main_call(
     method: &syn::Ident,
     arguments: &[proc_macro2::TokenStream],
+    marker: &LitStr,
 ) -> proc_macro2::TokenStream {
     quote! {
         let response = client.#method(#(#arguments),*)
             .await
             .unwrap_or_else(|error| panic!("client request: {error}"));
-        assert!(format!("{response:?}").contains("Fluffy"));
+        assert!(format!("{response:?}").contains(#marker));
     }
 }
 
 fn retry_module(
     context: &MockContext<'_>,
     success: &LitByteStr,
+    success_marker: &LitStr,
     assertion: &LitStr,
 ) -> proc_macro2::TokenStream {
     let server = retry_server(success, assertion);
-    let call = retry_call(context);
+    let call = retry_call(context, success_marker);
     let package = context.package;
     quote! {
         mod retry_tests {
@@ -271,7 +282,7 @@ fn retry_server(success: &LitByteStr, assertion: &LitStr) -> proc_macro2::TokenS
     }
 }
 
-fn retry_call(context: &MockContext<'_>) -> proc_macro2::TokenStream {
+fn retry_call(context: &MockContext<'_>, marker: &LitStr) -> proc_macro2::TokenStream {
     let method = context.method;
     let arguments = context.arguments;
     let auth = context.auth;
@@ -292,7 +303,7 @@ fn retry_call(context: &MockContext<'_>) -> proc_macro2::TokenStream {
         let response = client.#method(#(#arguments),*)
             .await
             .unwrap_or_else(|error| panic!("retry request: {error}"));
-        assert!(format!("{response:?}").contains("Fluffy"));
+        assert!(format!("{response:?}").contains(#marker));
     }
 }
 

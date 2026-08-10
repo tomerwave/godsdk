@@ -1,4 +1,5 @@
 
+# GODSDK_TARGET: python:start
   pypi:
     name: Publish Python SDK to PyPI
     needs: [crates]
@@ -19,3 +20,4 @@
       - name: Publish Python SDK
         working-directory: sdk/python
         run: maturin publish --manifest-path native/Cargo.toml
+# GODSDK_TARGET: python:end

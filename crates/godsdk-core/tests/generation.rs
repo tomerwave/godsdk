@@ -247,6 +247,16 @@ fn target_selection_can_generate_the_rust_core_without_typescript() {
     let config = std::fs::read_to_string(request.output_path().join(".godsdk/config.yaml"))
         .unwrap_or_else(|error| panic!("generated config is readable: {error}"));
     assert!(config.contains("targets: [rust]"));
+    let release =
+        std::fs::read_to_string(request.output_path().join(".github/workflows/release.yml"))
+            .unwrap_or_else(|error| panic!("generated release workflow is readable: {error}"));
+    let attention = std::fs::read_to_string(request.output_path().join("NEEDS-YOUR-ATTENTION.md"))
+        .unwrap_or_else(|error| panic!("attention document is readable: {error}"));
+    let readme = std::fs::read_to_string(request.output_path().join("README.md"))
+        .unwrap_or_else(|error| panic!("generated README is readable: {error}"));
+    assert!(!release.contains("TypeScript") && !release.contains("npm"));
+    assert!(!attention.contains("npm") && !attention.contains("PyPI"));
+    assert!(!readme.contains("TypeScript") && !readme.contains("npm"));
 }
 
 #[test]

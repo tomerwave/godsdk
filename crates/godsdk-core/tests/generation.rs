@@ -250,6 +250,35 @@ fn target_selection_can_generate_the_rust_core_without_typescript() {
 }
 
 #[test]
+fn python_target_generates_typed_pydantic_models_and_pyo3_binding() {
+    let (_output, request) = generated_fixture("minimal-3.1.yaml");
+    let request = request.with_targets([Target::Python]);
+
+    generate(&request).unwrap_or_else(|error| panic!("python generation succeeds: {error}"));
+
+    let models = std::fs::read_to_string(
+        request
+            .output_path()
+            .join("sdk/python/minimal_fixture_api/models.py"),
+    )
+    .unwrap_or_else(|error| panic!("python models are readable: {error}"));
+    let client = std::fs::read_to_string(
+        request
+            .output_path()
+            .join("sdk/python/minimal_fixture_api/client.py"),
+    )
+    .unwrap_or_else(|error| panic!("python client is readable: {error}"));
+    let native =
+        std::fs::read_to_string(request.output_path().join("sdk/python/native/src/lib.rs"))
+            .unwrap_or_else(|error| panic!("python native binding is readable: {error}"));
+
+    assert!(models.contains("BaseModel") && models.contains("ConfigDict"));
+    assert!(!models.contains("Any"));
+    assert!(client.contains("model_validate"));
+    assert!(native.contains("#[pymodule]") && native.contains("RustClient"));
+}
+
+#[test]
 fn equivalent_openapi_ordering_generates_identical_rust_sources() {
     let first = generate_source(
         r#"

@@ -1,0 +1,137 @@
+use super::identifiers::{ts_property, type_identifier};
+use crate::{ApiIr, Operation, Schema};
+
+pub(super) fn render_schemas(spec: &ApiIr) -> String {
+    let mut output = String::from("import * as z from \"zod\";\n\n");
+    for (name, schema) in &spec.schemas {
+        output.push_str(&format!(
+            "export const {name}Schema = {};\n\n",
+            zod_schema(schema, spec)
+        ));
+    }
+    for operation in &spec.operations {
+        if let Some(schema) = inline_success_schema(operation) {
+            output.push_str(&format!(
+                "export const {}Schema = {};\n\n",
+                operation_response_name(operation),
+                zod_schema(schema, spec)
+            ));
+        }
+    }
+    format!("{}\n", output.trim_end())
+}
+
+pub(super) fn render_types(spec: &ApiIr) -> String {
+    let mut output = String::from("import type * as z from \"zod\";\nimport { ");
+    output.push_str(
+        &spec
+            .schemas
+            .keys()
+            .map(|name| format!("{name}Schema"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    output.push_str(" } from \"./schemas.js\";\n\n");
+    for name in spec.schemas.keys() {
+        output.push_str(&format!(
+            "export type {name} = z.infer<typeof {name}Schema>;\n"
+        ));
+    }
+    for operation in &spec.operations {
+        if inline_success_schema(operation).is_some() {
+            let name = operation_response_name(operation);
+            output.push_str(&format!(
+                "export type {name} = z.infer<typeof {name}Schema>;\n"
+            ));
+        }
+    }
+    output
+}
+
+pub(super) fn schema_model_name(schema: &Schema) -> Option<String> {
+    match schema {
+        Schema::Reference(name) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+pub(super) fn inline_success_schema(operation: &Operation) -> Option<&Schema> {
+    operation
+        .responses
+        .iter()
+        .find(|response| response.status.starts_with('2'))
+        .and_then(|response| response.schema.as_ref())
+        .filter(|schema| schema_model_name(schema).is_none())
+}
+
+pub(super) fn operation_response_name(operation: &Operation) -> String {
+    format!("{}Response", type_identifier(&operation.operation_id))
+}
+
+fn zod_schema(schema: &Schema, spec: &ApiIr) -> String {
+    match schema {
+        Schema::String { .. } => "z.string()".to_string(),
+        Schema::Integer { .. } => "z.number().int()".to_string(),
+        Schema::Number { .. } => "z.number()".to_string(),
+        Schema::Boolean => "z.boolean()".to_string(),
+        Schema::Null => "z.null()".to_string(),
+        Schema::Array(item) => format!("z.array({})", zod_schema(item, spec)),
+        Schema::Object { .. } => zod_object_schema(schema, spec),
+        Schema::Enum(values) => format!(
+            "z.enum([{}])",
+            values
+                .iter()
+                .map(|value| format!("{value:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Schema::Reference(name) => format!("{name}Schema"),
+        Schema::Nullable(inner) => format!("{}.nullable()", zod_schema(inner, spec)),
+        Schema::OneOf(values) | Schema::AnyOf(values) => format!(
+            "z.union([{}])",
+            values
+                .iter()
+                .map(|value| zod_schema(value, spec))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Schema::AllOf(values) => values
+            .iter()
+            .map(|value| zod_schema(value, spec))
+            .reduce(|left, right| format!("z.intersection({left}, {right})"))
+            .unwrap_or_else(|| "z.never()".to_string()),
+    }
+}
+
+fn zod_object_schema(schema: &Schema, spec: &ApiIr) -> String {
+    let Schema::Object {
+        properties,
+        required,
+        additional_properties,
+    } = schema
+    else {
+        return "z.never()".to_string();
+    };
+    let fields = properties
+        .iter()
+        .map(|(name, value)| {
+            let optional = if required.contains(name) {
+                ""
+            } else {
+                ".optional()"
+            };
+            format!(
+                "  {}: {}{},",
+                ts_property(name),
+                zod_schema(value, spec),
+                optional
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let object = format!("z.object({{\n{fields}\n}})");
+    match additional_properties.as_deref() {
+        Some(value) => format!("{object}.catchall({})", zod_schema(value, spec)),
+        None => format!("{object}.strict()"),
+    }
+}

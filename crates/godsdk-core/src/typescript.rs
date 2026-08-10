@@ -4,6 +4,7 @@ mod identifiers;
 mod schemas;
 
 use super::code_writer::CodeWriter;
+use super::rust_ast::mock_success_body;
 use super::{ApiIr, Operation};
 use identifiers::{slug, ts_identifier};
 use schemas::{
@@ -387,6 +388,8 @@ fn render_client_test(spec: &ApiIr) -> String {
         return "import { describe, it } from \"vitest\";\n\ndescribe(\"generated client\", () => { it(\"has no operations\", () => {}); });\n".to_string();
     };
     let method = ts_identifier(&operation.operation_id);
+    let success_json =
+        String::from_utf8(mock_success_body(spec, operation)).unwrap_or_else(|_| "{}".to_string());
     let arguments = operation
         .parameters
         .iter()
@@ -394,22 +397,8 @@ fn render_client_test(spec: &ApiIr) -> String {
         .map(|_| "\"pet-1\"")
         .collect::<Vec<_>>()
         .join(", ");
-    let path = operation
-        .path
-        .split('{')
-        .enumerate()
-        .map(|(index, segment)| {
-            if index == 0 {
-                segment.to_string()
-            } else {
-                segment
-                    .split_once('}')
-                    .map_or_else(|| segment.to_string(), |parts| format!("pet-1{}", parts.1))
-            }
-        })
-        .collect::<String>();
     format!(
-        "import {{ createServer }} from \"node:http\";\nimport {{ afterAll, beforeAll, describe, expect, it }} from \"vitest\";\nimport {{ Client }} from \"../src/index.js\";\n\nconst server = createServer((_request, response) => {{\n  response.writeHead(200, {{ \"content-type\": \"application/json\" }});\n  response.end(JSON.stringify({{ id: \"pet-1\", name: \"Fluffy\" }}));\n}});\nlet baseUrl = \"\";\n\nbeforeAll(async () => {{\n  await new Promise<void>((resolve) => server.listen(0, \"127.0.0.1\", resolve));\n  const address = server.address();\n  if (address === null || typeof address === \"string\") throw new Error(\"mock server did not bind\");\n  baseUrl = `http://127.0.0.1:${{address.port}}`;\n}});\n\nafterAll(() => server.close());\n\ndescribe(\"generated native client\", () => {{\n  it(\"calls the Rust-backed local mock API\", async () => {{\n    const response = await new Client(baseUrl).{method}({arguments});\n    expect(response).toEqual({{ id: \"pet-1\", name: \"Fluffy\" }});\n    expect(\"{path}\").toContain(\"/pets/\");\n  }});\n}});\n"
+        "import {{ createServer }} from \"node:http\";\nimport {{ afterAll, beforeAll, describe, expect, it }} from \"vitest\";\nimport {{ Client }} from \"../src/index.js\";\n\nconst server = createServer((_request, response) => {{\n  response.writeHead(200, {{ \"content-type\": \"application/json\" }});\n  response.end(JSON.stringify({success_json}));\n}});\nlet baseUrl = \"\";\n\nbeforeAll(async () => {{\n  await new Promise<void>((resolve) => server.listen(0, \"127.0.0.1\", resolve));\n  const address = server.address();\n  if (address === null || typeof address === \"string\") throw new Error(\"mock server did not bind\");\n  baseUrl = `http://127.0.0.1:${{address.port}}`;\n}});\n\nafterAll(() => server.close());\n\ndescribe(\"generated native client\", () => {{\n  it(\"calls the Rust-backed local mock API\", async () => {{\n    const response = await new Client(baseUrl).{method}({arguments});\n    expect(response).toEqual({success_json});\n  }});\n}});\n"
     )
 }
 

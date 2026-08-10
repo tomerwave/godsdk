@@ -4,7 +4,7 @@ use crate::{ApiIr, Operation, Schema};
 
 const MAX_REFERENCE_DEPTH: usize = 6;
 
-pub(super) fn success_body(spec: &ApiIr, operation: &Operation) -> Vec<u8> {
+pub(crate) fn success_body(spec: &ApiIr, operation: &Operation) -> Vec<u8> {
     let schema = operation
         .responses
         .iter()

@@ -1,0 +1,3 @@
+# Versions used by generated repository governance workflows.
+godlint: 0.7.0
+godharness: 0.1.6

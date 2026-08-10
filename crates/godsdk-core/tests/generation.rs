@@ -271,11 +271,15 @@ fn python_target_generates_typed_pydantic_models_and_pyo3_binding() {
     let native =
         std::fs::read_to_string(request.output_path().join("sdk/python/native/src/lib.rs"))
             .unwrap_or_else(|error| panic!("python native binding is readable: {error}"));
+    let release =
+        std::fs::read_to_string(request.output_path().join(".github/workflows/release.yml"))
+            .unwrap_or_else(|error| panic!("generated release workflow is readable: {error}"));
 
     assert!(models.contains("BaseModel") && models.contains("ConfigDict"));
     assert!(!models.contains("Any"));
     assert!(client.contains("model_validate"));
     assert!(native.contains("#[pymodule]") && native.contains("RustClient"));
+    assert!(release.contains("Publish Python SDK to PyPI"));
 }
 
 #[test]

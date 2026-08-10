@@ -68,7 +68,9 @@ pub(super) fn validate_existing_files(
 }
 
 fn existing_file_conflict(root: &Path, file: &ExistingManifestFile) -> Option<GenerationError> {
-    if file.path == Path::new("api/openapi.yaml") {
+    if file.path == Path::new("api/openapi.yaml")
+        || file.path == Path::new("sdk/typescript/native/index.d.ts")
+    {
         return None;
     }
     let contents = fs::read_to_string(root.join(&file.path)).ok()?;

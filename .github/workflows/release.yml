@@ -128,6 +128,14 @@ jobs:
             godsdk-*.zip*
           if-no-files-found: error
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: |
+            godsdk
+            godsdk.exe
+          if-no-files-found: error
+
   publish:
     name: Publish Rust crates
     needs: binaries
@@ -144,9 +152,50 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
+  npm:
+    name: Publish to npm
+    needs: binaries
+    runs-on: ubuntu-latest
+    environment: npm
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm install --global npm@latest
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          path: binaries
+
+      - name: Assemble npm packages
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 packaging/build_npm.py "${TAG#v}" --binaries binaries --out packages
+
+      - name: Check every package packs
+        run: |
+          while read -r package; do
+            npm publish "$package" --access public --dry-run
+          done < packages/publish-order
+
+      - name: Publish in dependency order
+        run: |
+          while read -r package; do
+            npm publish "$package" --access public --provenance
+          done < packages/publish-order
+
   announce:
     name: Publish GitHub release
-    needs: [publish, binaries]
+    needs: [publish, npm, binaries]
     runs-on: ubuntu-latest
 
     steps:

@@ -27,6 +27,9 @@ cargo run -p godsdk-cli -- --help
 cargo run -p godsdk-cli -- generate --source spec.yaml --output ./generated
 ```
 
+For released CLI binaries, use Homebrew (`brew install tomerwave/tap/godsdk`), npm (`npm install
+--global godsdk`), crates.io (`cargo install godsdk-cli`), or the GitHub Releases page.
+
 The `generate` command reads an OpenAPI 3.1 document and creates a standalone SDK repository with
 a Tokio/reqwest Rust client, a Zod-validated TypeScript facade backed by a napi-rs native crate,
 local mock-server E2E tests, Cargo.lock, Godlint, and Godharness configuration.

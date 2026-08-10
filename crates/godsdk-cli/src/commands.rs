@@ -17,6 +17,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Generate(GenerateArgs),
+    Validate(ValidateArgs),
 }
 
 #[derive(Debug, Args)]
@@ -43,8 +44,20 @@ struct GenerateArgs {
     prune: bool,
 }
 
+#[derive(Debug, Args)]
+struct ValidateArgs {
+    #[arg(short = 's', long, alias = "source")]
+    spec: PathBuf,
+}
+
 pub fn run(cli: Cli) -> Result<(), godsdk_core::GenerationError> {
-    let Command::Generate(args) = cli.command;
+    match cli.command {
+        Command::Generate(args) => run_generate(args),
+        Command::Validate(args) => run_validate(args),
+    }
+}
+
+fn run_generate(args: GenerateArgs) -> Result<(), godsdk_core::GenerationError> {
     let mut request = GenerationRequest::new(args.source, args.output);
     request.mode = generation_mode(args.dry_run, args.check);
     request = request.with_targets(parse_targets(&args.targets)?);
@@ -55,6 +68,18 @@ pub fn run(cli: Cli) -> Result<(), godsdk_core::GenerationError> {
             println!("would change {}", path.display());
         }
     }
+    Ok(())
+}
+
+fn run_validate(args: ValidateArgs) -> Result<(), godsdk_core::GenerationError> {
+    let spec = godsdk_core::ApiSpec::from_path(args.spec)?;
+    println!(
+        "valid OpenAPI {}: {} ({} operations, {} schemas)",
+        spec.openapi_version,
+        spec.title,
+        spec.operations.len(),
+        spec.schemas.len()
+    );
     Ok(())
 }
 

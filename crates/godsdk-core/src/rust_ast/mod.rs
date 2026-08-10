@@ -7,6 +7,7 @@ use crate::ApiIr;
 mod builder;
 mod client;
 mod mock;
+mod mock_sample;
 mod models;
 mod operations;
 mod transport;

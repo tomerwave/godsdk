@@ -97,21 +97,43 @@ pub(super) fn apply_staged_repository(
     planned: &[PathBuf],
     options: ApplyOptions<'_>,
 ) -> Result<Vec<PathBuf>, GenerationError> {
-    if !output.exists() {
+    let (changed, stale, output_was_missing) = prepare_apply(output, staging, planned, &options)?;
+    let backup = create_backup(output)?;
+    let mut transaction = FileTransaction {
+        output,
+        backup,
+        backed_up: Vec::new(),
+        created: Vec::new(),
+        output_was_missing,
+    };
+    transaction.finish(changed, stale, staging)
+}
+
+fn prepare_apply(
+    output: &Path,
+    staging: &Path,
+    planned: &[PathBuf],
+    options: &ApplyOptions<'_>,
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>, bool), GenerationError> {
+    let changed = changed_files(output, staging, planned)?;
+    let stale = if options.enabled {
+        stale_paths(options.existing_manifest, planned, output)
+    } else {
+        Vec::new()
+    };
+    let output_was_missing = !output.exists();
+    if output_was_missing {
         fs::create_dir_all(output)
             .map_err(|error| GenerationError::CreateOutput(error.to_string()))?;
     }
+    Ok((changed, stale, output_was_missing))
+}
 
-    let mut changed = write_changed_files(output, staging, planned)?;
-    changed.extend(prune_stale_files(
-        output,
-        planned,
-        options.existing_manifest,
-        options.enabled,
-    )?);
-    changed.sort();
-    changed.dedup();
-    Ok(changed)
+fn create_backup(output: &Path) -> Result<tempfile::TempDir, GenerationError> {
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    tempfile::tempdir_in(parent).map_err(|error| {
+        GenerationError::CreateOutput(format!("could not create generation backup: {error}"))
+    })
 }
 
 pub(super) struct ApplyOptions<'a> {
@@ -119,34 +141,100 @@ pub(super) struct ApplyOptions<'a> {
     pub(super) enabled: bool,
 }
 
-fn write_changed_files(
-    output: &Path,
-    staging: &Path,
-    planned: &[PathBuf],
-) -> Result<Vec<PathBuf>, GenerationError> {
-    let changed = changed_files(output, staging, planned)?;
-    for relative in &changed {
-        copy_file_atomically(staging, output, relative)?;
-    }
-    Ok(changed)
+struct FileTransaction<'a> {
+    output: &'a Path,
+    backup: tempfile::TempDir,
+    backed_up: Vec<PathBuf>,
+    created: Vec<PathBuf>,
+    output_was_missing: bool,
 }
 
-fn prune_stale_files(
-    output: &Path,
-    planned: &[PathBuf],
-    existing_manifest: Option<&ExistingManifest>,
-    enabled: bool,
-) -> Result<Vec<PathBuf>, GenerationError> {
-    if !enabled {
-        return Ok(Vec::new());
+impl FileTransaction<'_> {
+    fn finish(
+        &mut self,
+        changed: Vec<PathBuf>,
+        stale: Vec<PathBuf>,
+        staging: &Path,
+    ) -> Result<Vec<PathBuf>, GenerationError> {
+        let result = self.apply(&changed, &stale, staging);
+        if let Err(error) = result {
+            self.rollback();
+            return Err(error);
+        }
+        if let Err(error) = self.remove_stale_parents(&stale) {
+            self.rollback();
+            return Err(error);
+        }
+        let mut changed = changed;
+        changed.extend(stale);
+        changed.sort();
+        changed.dedup();
+        Ok(changed)
     }
-    stale_paths(existing_manifest, planned, output)
-        .into_iter()
-        .map(|relative| {
-            remove_file_and_empty_parents(output, &relative)?;
-            Ok(relative)
-        })
-        .collect()
+
+    fn remove_stale_parents(&self, stale: &[PathBuf]) -> Result<(), GenerationError> {
+        stale
+            .iter()
+            .try_for_each(|relative| remove_file_and_empty_parents(self.output, relative))
+    }
+
+    fn apply(
+        &mut self,
+        changed: &[PathBuf],
+        stale: &[PathBuf],
+        staging: &Path,
+    ) -> Result<(), GenerationError> {
+        let mut to_backup = changed.to_vec();
+        to_backup.extend(stale.iter().cloned());
+        to_backup.sort();
+        to_backup.dedup();
+        for relative in to_backup {
+            self.backup_existing(&relative)?;
+        }
+        for relative in changed {
+            copy_file_atomically(staging, self.output, relative)?;
+            self.created.push(relative.clone());
+        }
+        Ok(())
+    }
+
+    fn backup_existing(&mut self, relative: &Path) -> Result<(), GenerationError> {
+        let source = self.output.join(relative);
+        if !source.exists() {
+            return Ok(());
+        }
+        let destination = self.backup.path().join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|error| GenerationError::Write {
+                path: parent.to_path_buf(),
+                message: error.to_string(),
+            })?;
+        }
+        fs::rename(&source, &destination).map_err(|error| GenerationError::Write {
+            path: relative.to_path_buf(),
+            message: error.to_string(),
+        })?;
+        self.backed_up.push(relative.to_path_buf());
+        Ok(())
+    }
+
+    fn rollback(&mut self) {
+        if self.output_was_missing {
+            let _ = fs::remove_dir_all(self.output);
+            return;
+        }
+        for relative in &self.created {
+            let _ = remove_file_and_empty_parents(self.output, relative);
+        }
+        for relative in self.backed_up.iter().rev() {
+            let source = self.backup.path().join(relative);
+            let destination = self.output.join(relative);
+            if let Some(parent) = destination.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let _ = fs::rename(source, destination);
+        }
+    }
 }
 
 pub(super) fn stale_paths(
@@ -257,4 +345,50 @@ fn is_safe_relative_path(path: &Path) -> bool {
         && path
             .components()
             .all(|component| !matches!(component, std::path::Component::ParentDir))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_multi_file_apply_restores_the_repository() {
+        let root = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary root: {error}"));
+        let output = root.path().join("output");
+        let staging = root.path().join("staging");
+        fs::create_dir_all(&staging).unwrap_or_else(|error| panic!("staging directory: {error}"));
+        fs::create_dir_all(&output).unwrap_or_else(|error| panic!("output directory: {error}"));
+        fs::write(staging.join("first.txt"), "new")
+            .unwrap_or_else(|error| panic!("first staged file: {error}"));
+        fs::create_dir_all(staging.join("blocked"))
+            .unwrap_or_else(|error| panic!("blocked staging directory: {error}"));
+        fs::write(staging.join("blocked/file.txt"), "new")
+            .unwrap_or_else(|error| panic!("blocked staged file: {error}"));
+        fs::write(output.join("blocked"), "user file")
+            .unwrap_or_else(|error| panic!("blocking output file: {error}"));
+
+        let error = match apply_staged_repository(
+            &output,
+            &staging,
+            &[
+                PathBuf::from("first.txt"),
+                PathBuf::from("blocked/file.txt"),
+            ],
+            ApplyOptions {
+                existing_manifest: None,
+                enabled: false,
+            },
+        ) {
+            Ok(_) => panic!("a file must block the second staged write"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, GenerationError::Write { .. }));
+        assert!(!output.join("first.txt").exists());
+        assert_eq!(
+            fs::read_to_string(output.join("blocked"))
+                .unwrap_or_else(|error| panic!("restored blocking file: {error}")),
+            "user file"
+        );
+    }
 }

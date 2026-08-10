@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::Schema;
+use crate::ingestion_refs::resolve_external_references;
 use crate::ir::{ApiIr, HttpMethod, Operation, Parameter, ParameterLocation, Response};
 use crate::schema::schema_from_value;
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -15,6 +16,8 @@ pub enum IngestionError {
     Parse(String),
     #[error("unsupported OpenAPI version {0}; expected 3.1.x")]
     UnsupportedVersion(String),
+    #[error("could not resolve external reference {reference}: {message}")]
+    ExternalReference { reference: String, message: String },
     #[error("path {path} has no operation")]
     EmptyPath { path: String },
     #[error("operation at {method} {path} has no operationId")]
@@ -99,21 +102,57 @@ impl ApiIr {
             path: path.to_path_buf(),
             message: error.to_string(),
         })?;
-        Self::parse(&source)
+        Self::parse_source(&source, path.parent())
     }
 
     pub fn parse(source: &str) -> Result<Self, IngestionError> {
-        let raw_value: serde_json::Value = yaml_serde::from_str(source)
-            .map_err(|error| IngestionError::Parse(error.to_string()))?;
-        let raw: RawDocument = serde_json::from_value(raw_value.clone())
-            .map_err(|error| IngestionError::Parse(error.to_string()))?;
-
-        if !raw.openapi.starts_with("3.1.") {
-            return Err(IngestionError::UnsupportedVersion(raw.openapi));
-        }
-
-        normalize_document(raw)
+        Self::parse_source(source, None)
     }
+
+    fn parse_source(source: &str, base_directory: Option<&Path>) -> Result<Self, IngestionError> {
+        let (raw_value, references) = parse_document_value(source)?;
+        let raw_value = resolve_document_value(raw_value, base_directory)?;
+        let raw = parse_raw_document(raw_value)?;
+        let mut spec = normalize_raw_document(raw)?;
+        spec.references = references.into_iter().collect();
+        Ok(spec)
+    }
+}
+
+fn parse_raw_document(value: serde_json::Value) -> Result<RawDocument, IngestionError> {
+    serde_json::from_value(value).map_err(|error| IngestionError::Parse(error.to_string()))
+}
+
+fn normalize_raw_document(raw: RawDocument) -> Result<ApiIr, IngestionError> {
+    validate_openapi_version(&raw.openapi)?;
+    normalize_document(raw)
+}
+
+fn validate_openapi_version(version: &str) -> Result<(), IngestionError> {
+    if version.starts_with("3.1.") {
+        Ok(())
+    } else {
+        Err(IngestionError::UnsupportedVersion(version.to_string()))
+    }
+}
+
+fn resolve_document_value(
+    mut value: serde_json::Value,
+    base_directory: Option<&Path>,
+) -> Result<serde_json::Value, IngestionError> {
+    if let Some(base_directory) = base_directory {
+        resolve_external_references(&mut value, base_directory)?;
+    }
+    Ok(value)
+}
+
+fn parse_document_value(
+    source: &str,
+) -> Result<(serde_json::Value, BTreeSet<String>), IngestionError> {
+    let value: serde_json::Value =
+        yaml_serde::from_str(source).map_err(|error| IngestionError::Parse(error.to_string()))?;
+    let references = crate::ingestion_refs::external_references(&value);
+    Ok((value, references))
 }
 
 fn normalize_document(raw: RawDocument) -> Result<ApiIr, IngestionError> {

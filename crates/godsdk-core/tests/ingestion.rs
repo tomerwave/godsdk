@@ -64,8 +64,63 @@ fn records_external_parameter_references_for_resolution() {
 
     assert_eq!(
         spec.references,
-        ["./refs/models.yaml#/components/parameters/UserId"]
+        [
+            "./refs/models.yaml#/components/parameters/UserId",
+            "./refs/models.yaml#/components/schemas/User"
+        ]
     );
+}
+
+#[test]
+fn resolves_external_parameters_and_schemas_when_loading_from_a_file() {
+    let directory = tempfile::tempdir()
+        .unwrap_or_else(|error| panic!("temporary directory should exist: {error}"));
+    std::fs::write(
+        directory.path().join("models.yaml"),
+        "components:\n  parameters:\n    UserId:\n      name: user_id\n      in: path\n      required: true\n      schema: {type: string}\n  schemas:\n    User: {type: object, properties: {id: {type: string}, address: {$ref: './nested.yaml#/components/schemas/Address'}}}\n",
+    )
+    .unwrap_or_else(|error| panic!("models document is writable: {error}"));
+    std::fs::write(
+        directory.path().join("nested.yaml"),
+        "components:\n  schemas:\n    Address: {type: object, properties: {city: {type: string}}}\n",
+    )
+    .unwrap_or_else(|error| panic!("nested document is writable: {error}"));
+    let entry = directory.path().join("openapi.yaml");
+    std::fs::write(
+        &entry,
+        "openapi: 3.1.1\ninfo: {title: External, version: 1.0.0}\npaths:\n  /users/{user_id}:\n    get:\n      operationId: getUser\n      parameters:\n        - $ref: './models.yaml#/components/parameters/UserId'\n      responses:\n        '200':\n          content:\n            application/json:\n              schema:\n                $ref: './models.yaml#/components/schemas/User'\n",
+    )
+    .unwrap_or_else(|error| panic!("entry document is writable: {error}"));
+
+    let spec = ApiSpec::from_path(&entry)
+        .unwrap_or_else(|error| panic!("external references resolve: {error}"));
+
+    assert!(spec.schemas.contains_key("User"));
+    assert!(spec.schemas.contains_key("Address"));
+    assert_eq!(spec.operations[0].parameters[0].name, "user_id");
+    assert!(matches!(
+        spec.operations[0].responses[0].schema,
+        Some(Schema::Reference(ref name)) if name == "User"
+    ));
+}
+
+#[test]
+fn rejects_remote_external_references_when_loading_from_a_file() {
+    let directory = tempfile::tempdir()
+        .unwrap_or_else(|error| panic!("temporary directory should exist: {error}"));
+    let entry = directory.path().join("openapi.yaml");
+    std::fs::write(
+        &entry,
+        "openapi: 3.1.1\ninfo: {title: Remote, version: 1.0.0}\npaths:\n  /pets:\n    get:\n      operationId: listPets\n      responses:\n        '200':\n          content:\n            application/json:\n              schema:\n                $ref: 'https://example.test/models.yaml#/components/schemas/Pet'\n",
+    )
+    .unwrap_or_else(|error| panic!("entry document is writable: {error}"));
+
+    let error = match ApiSpec::from_path(&entry) {
+        Ok(_) => panic!("remote references must be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(error, IngestionError::ExternalReference { .. }));
 }
 
 #[test]

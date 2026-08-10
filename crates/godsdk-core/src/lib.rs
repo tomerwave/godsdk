@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 
 mod generation;
 mod generation_transaction;
+mod ingestion_refs;
 mod ir;
 mod rust_ast;
 mod schema;

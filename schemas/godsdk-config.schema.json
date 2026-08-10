@@ -25,7 +25,19 @@
           "minLength": 1,
           "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"
         },
-        "allow_remote_refs": {"type": "boolean"}
+        "allow_remote_refs": {"type": "boolean"},
+        "remote_ref_hosts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "remote_ref_sha256": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[A-Fa-f0-9]{64}$"
+          }
+        }
       }
     },
     "targets": {

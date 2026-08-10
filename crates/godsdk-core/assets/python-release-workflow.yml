@@ -1,0 +1,23 @@
+
+# GODSDK_TARGET: python:start
+  pypi:
+    name: Publish Python SDK to PyPI
+    needs: [crates]
+    runs-on: ubuntu-latest
+    environment: pypi
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build tooling
+        run: python -m pip install --upgrade maturin
+      - name: Publish Python SDK
+        working-directory: sdk/python
+        run: maturin publish --manifest-path native/Cargo.toml
+# GODSDK_TARGET: python:end

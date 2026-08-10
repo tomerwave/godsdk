@@ -9,9 +9,9 @@ development dependencies of the repository, not components of the runtime genera
 
 ### Ingestion
 
-Read OpenAPI 3.0/3.1 JSON or YAML, validate the document, and eventually resolve local or remote
-`$ref` dependencies under an explicit security policy. The scaffold does not perform any of
-these operations.
+Read OpenAPI 3.0/3.1 JSON or YAML, validate the document, and resolve local `$ref` dependencies.
+Remote `$ref` documents are opt-in and require an allowlisted host plus a SHA-256 pin; validation
+and generation use the same policy.
 
 ### Intermediate representation
 

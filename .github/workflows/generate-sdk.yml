@@ -1,0 +1,102 @@
+name: Generate SDK
+
+on:
+  workflow_call:
+    inputs:
+      spec-path:
+        required: true
+        type: string
+      targets:
+        required: false
+        default: rust,typescript
+        type: string
+      output:
+        required: false
+        default: .
+        type: string
+      mode:
+        required: false
+        default: dry-run
+        type: string
+      prune:
+        required: false
+        default: false
+        type: boolean
+      commit:
+        required: false
+        default: false
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      spec-path:
+        required: true
+        type: string
+      targets:
+        required: true
+        default: rust,typescript
+        type: string
+      output:
+        required: true
+        default: .
+        type: string
+      mode:
+        required: true
+        default: dry-run
+        type: choice
+        options: [write, dry-run, check]
+      prune:
+        required: true
+        default: false
+        type: boolean
+      commit:
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: tomerwave/godsdk@d50d7166003259bdd270a7486bcf7a424a099d88 # v0.1.2
+        with:
+          spec-path: ${{ inputs.spec-path }}
+          targets: ${{ inputs.targets }}
+          output: ${{ inputs.output }}
+          mode: ${{ inputs.mode }}
+          prune: ${{ inputs.prune }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: godsdk-generated
+          path: ${{ inputs.output }}
+      - name: Report commit mode boundary
+        if: inputs.commit == true
+        run: echo "Generation preview completed; the authorized commit job will rerun the pinned generator."
+
+  commit:
+    if: inputs.commit == true
+    needs: generate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: tomerwave/godsdk@d50d7166003259bdd270a7486bcf7a424a099d88 # v0.1.2
+        with:
+          spec-path: ${{ inputs.spec-path }}
+          targets: ${{ inputs.targets }}
+          output: ${{ inputs.output }}
+          mode: write
+          prune: ${{ inputs.prune }}
+      - name: Commit generated changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --quiet || (git commit -m "chore: update generated SDK" && git push)

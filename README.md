@@ -25,12 +25,14 @@ Install Rust 1.97.1, then run:
 ```sh
 cargo run -p godsdk-cli -- --help
 cargo run -p godsdk-cli -- generate --source spec.yaml --output ./generated
+cargo run -p godsdk-cli -- validate --spec spec.yaml
 ```
 
 For released CLI binaries, use Homebrew (`brew install tomerwave/tap/godsdk`), npm (`npm install
 --global godsdk`), crates.io (`cargo install godsdk-cli`), or the GitHub Releases page.
 
-The `generate` command reads an OpenAPI 3.1 document and creates a standalone SDK repository with
+The `validate` command parses an OpenAPI 3.0 or 3.1 document without touching an output directory.
+The `generate` command reads the same supported versions and creates a standalone SDK repository with
 a Tokio/reqwest Rust client, a Zod-validated TypeScript facade backed by a napi-rs native crate,
 local mock-server E2E tests, Cargo.lock, Godlint, and Godharness configuration.
 
@@ -65,7 +67,8 @@ OpenAPI or custom specification
 
 The intended stages are:
 
-1. Ingest OpenAPI 3.0/3.1 JSON and YAML, including local and remote reference handling.
+1. Ingest OpenAPI 3.0/3.1 JSON and YAML, including local references. Remote `$ref` documents are
+   opt-in and require both an allowlisted host and a SHA-256 pin.
 2. Normalize endpoints, models, authentication, casing, and response shapes into a typed IR.
 3. Generate a publishable Rust client core with shared HTTP, serialization, auth, retry, and
    rate-limit behavior.

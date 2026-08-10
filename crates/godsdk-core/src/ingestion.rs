@@ -4,72 +4,28 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::ReferencePolicy;
 use crate::Schema;
+use crate::ingestion_contracts::normalize_operation_contract;
+use crate::ingestion_refs::resolve_external_references;
+use crate::ingestion_security::{
+    RawSecurityScheme, normalize_security_requirements, normalize_security_schemes,
+};
+use crate::ir::{
+    ApiIr, HttpMethod, Operation, Parameter, ParameterLocation, RequestBody, Response,
+    SecurityScheme,
+};
 use crate::schema::schema_from_value;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ApiSpec {
-    pub openapi_version: String,
-    pub title: String,
-    pub version: String,
-    pub operations: Vec<Operation>,
-    pub schemas: BTreeMap<String, Schema>,
-    pub references: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Operation {
-    pub operation_id: String,
-    pub method: HttpMethod,
-    pub path: String,
-    pub parameters: Vec<Parameter>,
-    pub request_body: bool,
-    pub request_body_schema: Option<Schema>,
-    pub response_statuses: Vec<String>,
-    pub responses: Vec<Response>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Response {
-    pub status: String,
-    pub schema: Option<Schema>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum HttpMethod {
-    Delete,
-    Get,
-    Head,
-    Options,
-    Patch,
-    Post,
-    Put,
-    Trace,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Parameter {
-    pub name: String,
-    pub location: ParameterLocation,
-    pub required: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParameterLocation {
-    Query,
-    Header,
-    Path,
-    Cookie,
-}
-
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum IngestionError {
     #[error("could not read OpenAPI document {path}: {message}")]
     Read { path: PathBuf, message: String },
     #[error("could not parse OpenAPI document: {0}")]
     Parse(String),
-    #[error("unsupported OpenAPI version {0}; expected 3.1.x")]
+    #[error("unsupported OpenAPI version {0}; expected 3.0.x or 3.1.x")]
     UnsupportedVersion(String),
+    #[error("could not resolve external reference {reference}: {message}")]
+    ExternalReference { reference: String, message: String },
     #[error("path {path} has no operation")]
     EmptyPath { path: String },
     #[error("operation at {method} {path} has no operationId")]
@@ -82,6 +38,12 @@ pub enum IngestionError {
     UnsupportedMethod { method: String, path: String },
     #[error("unsupported schema at {path}: {detail}")]
     UnsupportedSchema { path: String, detail: String },
+    #[error("unsupported security scheme {name}: {detail}")]
+    UnsupportedSecurityScheme { name: String, detail: String },
+    #[error("security requirement references unknown scheme {name}")]
+    UnknownSecurityScheme { name: String },
+    #[error("security requirement for {scheme} references unknown scope {scope}")]
+    UnknownSecurityScope { scheme: String, scope: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,12 +53,16 @@ struct RawDocument {
     paths: BTreeMap<String, RawPathItem>,
     #[serde(default)]
     components: RawComponents,
+    #[serde(default)]
+    security: Option<Vec<BTreeMap<String, Vec<String>>>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct RawComponents {
     #[serde(default)]
     schemas: BTreeMap<String, serde_json::Value>,
+    #[serde(rename = "securitySchemes", default)]
+    security_schemes: BTreeMap<String, RawSecurityScheme>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,6 +95,8 @@ struct RawOperation {
     request_body: Option<serde_json::Value>,
     #[serde(default)]
     responses: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    security: Option<Vec<BTreeMap<String, Vec<String>>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,72 +115,162 @@ enum RawParameter {
     },
 }
 
-impl ApiSpec {
+impl ApiIr {
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, IngestionError> {
+        Self::from_path_with_policy(path, &ReferencePolicy::default())
+    }
+
+    pub fn from_path_with_policy(
+        path: impl AsRef<Path>,
+        reference_policy: &ReferencePolicy,
+    ) -> Result<Self, IngestionError> {
         let path = path.as_ref();
         let source = fs::read_to_string(path).map_err(|error| IngestionError::Read {
             path: path.to_path_buf(),
             message: error.to_string(),
         })?;
-        Self::parse(&source)
+        Self::parse_source(&source, path.parent(), reference_policy)
     }
 
     pub fn parse(source: &str) -> Result<Self, IngestionError> {
-        let raw_value: serde_json::Value = yaml_serde::from_str(source)
-            .map_err(|error| IngestionError::Parse(error.to_string()))?;
-        let raw: RawDocument = serde_json::from_value(raw_value.clone())
-            .map_err(|error| IngestionError::Parse(error.to_string()))?;
+        Self::parse_with_policy(source, None, &ReferencePolicy::default())
+    }
 
-        if !raw.openapi.starts_with("3.1.") {
-            return Err(IngestionError::UnsupportedVersion(raw.openapi));
-        }
+    pub fn parse_with_policy(
+        source: &str,
+        base_directory: Option<&Path>,
+        reference_policy: &ReferencePolicy,
+    ) -> Result<Self, IngestionError> {
+        Self::parse_source(source, base_directory, reference_policy)
+    }
 
-        normalize_document(raw)
+    fn parse_source(
+        source: &str,
+        base_directory: Option<&Path>,
+        reference_policy: &ReferencePolicy,
+    ) -> Result<Self, IngestionError> {
+        let (raw_value, references) = parse_document_value(source)?;
+        let raw_value = resolve_document_value(raw_value, base_directory, reference_policy)?;
+        let raw = parse_raw_document(raw_value)?;
+        let mut spec = normalize_raw_document(raw)?;
+        spec.references = references.into_iter().collect();
+        Ok(spec)
     }
 }
 
-fn normalize_document(raw: RawDocument) -> Result<ApiSpec, IngestionError> {
-    let mut operations = Vec::new();
-    let mut operation_ids = BTreeSet::new();
-    let mut references = BTreeSet::new();
-    let mut schemas = BTreeMap::new();
+fn parse_raw_document(value: serde_json::Value) -> Result<RawDocument, IngestionError> {
+    serde_json::from_value(value).map_err(|error| IngestionError::Parse(error.to_string()))
+}
 
-    for (name, value) in &raw.components.schemas {
-        schemas.insert(
-            name.clone(),
-            schema_from_value(value, &format!("components.schemas.{name}"))?,
-        );
-    }
+fn normalize_raw_document(raw: RawDocument) -> Result<ApiIr, IngestionError> {
+    validate_openapi_version(&raw.openapi)?;
+    normalize_document(raw)
+}
 
-    for (path, item) in raw.paths {
-        operations.extend(normalize_path(
-            &path,
-            item,
-            &mut operation_ids,
-            &mut references,
-        )?);
+fn validate_openapi_version(version: &str) -> Result<(), IngestionError> {
+    if version.starts_with("3.0.") || version.starts_with("3.1.") {
+        Ok(())
+    } else {
+        Err(IngestionError::UnsupportedVersion(version.to_string()))
     }
+}
+
+fn resolve_document_value(
+    mut value: serde_json::Value,
+    base_directory: Option<&Path>,
+    reference_policy: &ReferencePolicy,
+) -> Result<serde_json::Value, IngestionError> {
+    let base_directory = base_directory.unwrap_or_else(|| Path::new("."));
+    resolve_external_references(&mut value, base_directory, reference_policy)?;
+    Ok(value)
+}
+
+fn parse_document_value(
+    source: &str,
+) -> Result<(serde_json::Value, BTreeSet<String>), IngestionError> {
+    let value: serde_json::Value =
+        yaml_serde::from_str(source).map_err(|error| IngestionError::Parse(error.to_string()))?;
+    let references = crate::ingestion_refs::external_references(&value);
+    Ok((value, references))
+}
+
+fn normalize_document(raw: RawDocument) -> Result<ApiIr, IngestionError> {
+    let RawDocument {
+        openapi,
+        info,
+        paths,
+        components,
+        security,
+    } = raw;
+    let normalized = normalize_components(components)?;
+    let schemas = normalized.schemas;
+    let security_schemes = normalized.security_schemes;
+    let security = security
+        .as_deref()
+        .map(|requirements| normalize_security_requirements(requirements, &security_schemes))
+        .transpose()?;
+    let (mut operations, references) = normalize_operations(paths, &security_schemes)?;
     operations.sort_by(|left, right| {
         left.path
             .cmp(&right.path)
             .then(left.method.cmp(&right.method))
     });
 
-    Ok(ApiSpec {
-        openapi_version: raw.openapi,
-        title: raw.info.title,
-        version: raw.info.version,
+    Ok(ApiIr {
+        openapi_version: openapi,
+        title: info.title,
+        version: info.version,
         operations,
         schemas,
-        references: references.into_iter().collect(),
+        security,
+        security_schemes,
+        references,
     })
 }
 
-fn normalize_path(
-    path: &str,
+struct NormalizedComponents {
+    schemas: BTreeMap<String, Schema>,
+    security_schemes: BTreeMap<String, SecurityScheme>,
+}
+
+fn normalize_components(components: RawComponents) -> Result<NormalizedComponents, IngestionError> {
+    let schemas = components
+        .schemas
+        .iter()
+        .map(|(name, value)| {
+            schema_from_value(value, &format!("components.schemas.{name}"))
+                .map(|schema| (name.clone(), schema))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let security_schemes = normalize_security_schemes(components.security_schemes)?;
+    Ok(NormalizedComponents {
+        schemas,
+        security_schemes,
+    })
+}
+
+fn normalize_operations(
+    paths: BTreeMap<String, RawPathItem>,
+    security_schemes: &BTreeMap<String, SecurityScheme>,
+) -> Result<(Vec<Operation>, Vec<String>), IngestionError> {
+    let mut state = NormalizationState {
+        operation_ids: BTreeSet::new(),
+        references: BTreeSet::new(),
+        security_schemes,
+    };
+    let operations = paths
+        .into_iter()
+        .map(|(path, item)| normalize_path(&path, item, &mut state))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|groups| groups.into_iter().flatten().collect())?;
+    let references = state.references.into_iter().collect();
+    Ok((operations, references))
+}
+
+fn normalize_path<'path, 'scheme, 'state>(
+    path: &'path str,
     item: RawPathItem,
-    operation_ids: &mut BTreeSet<String>,
-    references: &mut BTreeSet<String>,
+    state: &'state mut NormalizationState<'scheme>,
 ) -> Result<Vec<Operation>, IngestionError> {
     let methods = [
         ("delete", HttpMethod::Delete, item.delete),
@@ -233,8 +291,9 @@ fn normalize_path(
             path,
             method_name,
             path_parameters: &item.parameters,
-            operation_ids,
-            references,
+            operation_ids: &mut state.operation_ids,
+            references: &mut state.references,
+            security_schemes: state.security_schemes,
         };
         operations.push(normalize_operation(operation, method, context)?);
     }
@@ -246,20 +305,32 @@ fn normalize_path(
     Ok(operations)
 }
 
-struct NormalizationContext<'a> {
-    path: &'a str,
-    method_name: &'a str,
-    path_parameters: &'a [RawParameter],
-    operation_ids: &'a mut BTreeSet<String>,
-    references: &'a mut BTreeSet<String>,
+struct NormalizationState<'a> {
+    operation_ids: BTreeSet<String>,
+    references: BTreeSet<String>,
+    security_schemes: &'a BTreeMap<String, SecurityScheme>,
 }
 
-fn normalize_operation(
+struct NormalizationContext<'path, 'item, 'security> {
+    path: &'path str,
+    method_name: &'path str,
+    path_parameters: &'item [RawParameter],
+    operation_ids: &'item mut BTreeSet<String>,
+    references: &'item mut BTreeSet<String>,
+    security_schemes: &'security BTreeMap<String, SecurityScheme>,
+}
+
+fn normalize_operation<'path, 'item, 'security>(
     operation: RawOperation,
     method: HttpMethod,
-    mut context: NormalizationContext<'_>,
+    context: NormalizationContext<'path, 'item, 'security>,
 ) -> Result<Operation, IngestionError> {
-    let operation_id = operation_id(&operation, &mut context)?;
+    let operation_id = operation_id(
+        &operation,
+        context.operation_ids,
+        context.path,
+        context.method_name,
+    )?;
     let parameters = normalize_parameters(
         context.path,
         context.path_parameters,
@@ -267,72 +338,73 @@ fn normalize_operation(
         context.references,
     )?;
     validate_path_parameters(context.path, &parameters, context.references)?;
-    let (request_body_schema, responses) = parse_operation_schemas(&operation, context.path)?;
+    let data = normalize_operation_data(&operation, context.path, context.security_schemes)?;
     Ok(Operation {
         operation_id,
         method,
         path: context.path.to_string(),
         parameters,
-        request_body: operation.request_body.is_some(),
-        response_statuses: operation.responses.into_keys().collect(),
-        request_body_schema,
+        request_body: data.request_body,
+        response_statuses: data.response_statuses,
+        request_body_schema: data.request_body_schema,
+        request_body_details: data.request_body_details,
+        responses: data.responses,
+        security: data.security,
+    })
+}
+
+struct NormalizedOperationData {
+    request_body: bool,
+    request_body_schema: Option<Schema>,
+    request_body_details: Option<RequestBody>,
+    response_statuses: Vec<String>,
+    responses: Vec<Response>,
+    security: Option<Vec<crate::ir::SecurityRequirement>>,
+}
+
+fn normalize_operation_data(
+    operation: &RawOperation,
+    path: &str,
+    security_schemes: &BTreeMap<String, SecurityScheme>,
+) -> Result<NormalizedOperationData, IngestionError> {
+    let (request_body_details, responses) =
+        normalize_operation_contract(operation.request_body.as_ref(), &operation.responses, path)?;
+    let security = operation
+        .security
+        .as_ref()
+        .map(|requirements| normalize_security_requirements(requirements, security_schemes))
+        .transpose()?;
+    Ok(NormalizedOperationData {
+        request_body: request_body_details.is_some(),
+        response_statuses: operation.responses.keys().cloned().collect(),
+        request_body_schema: request_body_details
+            .as_ref()
+            .and_then(|body| body.schema.clone()),
+        request_body_details,
         responses,
+        security,
     })
 }
 
 fn operation_id(
     operation: &RawOperation,
-    context: &mut NormalizationContext<'_>,
+    operation_ids: &mut BTreeSet<String>,
+    path: &str,
+    method_name: &str,
 ) -> Result<String, IngestionError> {
     let operation_id =
         operation
             .operation_id
             .clone()
             .ok_or_else(|| IngestionError::MissingOperationId {
-                method: context.method_name.to_string(),
-                path: context.path.to_string(),
+                method: method_name.to_string(),
+                path: path.to_string(),
             })?;
-    if context.operation_ids.insert(operation_id.clone()) {
+    if operation_ids.insert(operation_id.clone()) {
         Ok(operation_id)
     } else {
         Err(IngestionError::DuplicateOperationId { operation_id })
     }
-}
-
-fn parse_operation_schemas(
-    operation: &RawOperation,
-    path: &str,
-) -> Result<(Option<Schema>, Vec<Response>), IngestionError> {
-    let request_body_schema = operation
-        .request_body
-        .as_ref()
-        .and_then(|body| body.get("content"))
-        .and_then(first_content_schema)
-        .map(|schema| schema_from_value(schema, &format!("{path}.requestBody")))
-        .transpose()?;
-    let responses = operation
-        .responses
-        .iter()
-        .map(|(status, response)| {
-            let schema = response
-                .get("content")
-                .and_then(first_content_schema)
-                .map(|schema| schema_from_value(schema, &format!("{path} responses {status}")))
-                .transpose()?;
-            Ok(Response {
-                status: status.clone(),
-                schema,
-            })
-        })
-        .collect::<Result<Vec<_>, IngestionError>>()?;
-    Ok((request_body_schema, responses))
-}
-
-fn first_content_schema(content: &serde_json::Value) -> Option<&serde_json::Value> {
-    content
-        .as_object()?
-        .values()
-        .find_map(|media| media.get("schema"))
 }
 
 fn normalize_parameters(
@@ -358,7 +430,25 @@ fn normalize_parameters(
             }
         }
     }
+    parameters.sort_by_key(|parameter| parameter_order(path, parameter));
     Ok(parameters)
+}
+
+fn parameter_order(path: &str, parameter: &Parameter) -> (u8, usize, String) {
+    if parameter.location == ParameterLocation::Path {
+        let position = path_parameters(path)
+            .iter()
+            .position(|name| name == &parameter.name)
+            .unwrap_or(usize::MAX);
+        return (0, position, parameter.name.clone());
+    }
+    let location = match parameter.location {
+        ParameterLocation::Query => 1,
+        ParameterLocation::Header => 2,
+        ParameterLocation::Cookie => 3,
+        ParameterLocation::Path => unreachable!("path parameters return above"),
+    };
+    (location, 0, parameter.name.clone())
 }
 
 fn validate_path_parameters(

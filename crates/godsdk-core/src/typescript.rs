@@ -1,13 +1,28 @@
-use super::{ApiSpec, Operation, Schema};
+#[path = "typescript/identifiers.rs"]
+mod identifiers;
+#[path = "typescript/schemas.rs"]
+mod schemas;
 
-pub(crate) fn render_typescript_files(spec: &ApiSpec) -> Vec<(&'static str, String)> {
+use super::code_writer::CodeWriter;
+use super::rust_ast::mock_success_body;
+use super::{ApiIr, Operation};
+use identifiers::{slug, ts_identifier};
+use schemas::{
+    inline_success_schema, operation_response_name, render_schemas, render_types, schema_model_name,
+};
+
+pub(crate) fn render_typescript_files(spec: &ApiIr) -> Vec<(&'static str, String)> {
     vec![
         ("sdk/typescript/package.json", render_package(spec)),
         ("sdk/typescript/tsconfig.json", render_tsconfig()),
         ("sdk/typescript/src/schemas.ts", render_schemas(spec)),
         ("sdk/typescript/src/types.ts", render_types(spec)),
-        ("sdk/typescript/src/errors.ts", render_errors()),
+        ("sdk/typescript/src/errors.ts", render_errors(spec)),
         ("sdk/typescript/src/native.ts", render_native_loader(spec)),
+        (
+            "sdk/typescript/native/index.d.ts",
+            render_native_declaration(spec),
+        ),
         ("sdk/typescript/src/index.ts", render_index(spec)),
         (
             "sdk/typescript/tests/validation.test.ts",
@@ -30,77 +45,199 @@ pub(crate) fn render_typescript_files(spec: &ApiSpec) -> Vec<(&'static str, Stri
     ]
 }
 
-fn render_package(spec: &ApiSpec) -> String {
-    format!(
-        "{{\n  \"name\": \"{}-sdk\",\n  \"version\": \"0.1.0\",\n  \"type\": \"module\",\n  \"main\": \"./dist/index.js\",\n  \"exports\": {{\".\": \"./dist/index.js\"}},\n  \"scripts\": {{\"build\": \"tsc --noEmit\", \"build:native\": \"napi build --manifest-path native/Cargo.toml --platform --release\", \"test\": \"vitest run\", \"test:native\": \"npm run build:native && npm test\"}},\n  \"napi\": {{\"binaryName\": \"{}-sdk\", \"packageName\": \"{}-sdk\", \"targets\": [\"x86_64-unknown-linux-gnu\", \"x86_64-unknown-linux-musl\", \"aarch64-unknown-linux-gnu\", \"aarch64-unknown-linux-musl\", \"x86_64-apple-darwin\", \"aarch64-apple-darwin\", \"x86_64-pc-windows-msvc\"]}},\n  \"dependencies\": {{\"zod\": \"^4.4.3\"}},\n  \"devDependencies\": {{\"@napi-rs/cli\": \"^3.8.3\", \"@types/node\": \"^22.0.0\", \"typescript\": \"^5.0.0\", \"vitest\": \"^3.0.0\"}}\n}}\n",
-        slug(&spec.title),
-        slug(&spec.title),
-        slug(&spec.title),
-    )
+fn render_package(spec: &ApiIr) -> String {
+    let package = slug(&spec.title);
+    CodeWriter::from_lines(package_lines(&package))
+}
+
+fn package_lines(package: &str) -> Vec<String> {
+    vec![
+        "{".to_string(),
+        format!("  \"name\": \"{package}-sdk\","),
+        "  \"version\": \"0.1.0\",".to_string(),
+        "  \"type\": \"module\",".to_string(),
+        "  \"main\": \"./dist/index.js\",".to_string(),
+        "  \"exports\": {\".\": \"./dist/index.js\"},".to_string(),
+        "  \"scripts\": {\"build\": \"tsc --noEmit\", \"build:native\": \"napi build --manifest-path native/Cargo.toml --platform --release\", \"test\": \"vitest run\", \"test:native\": \"npm run build:native && npm test\", \"prepublishOnly\": \"napi prepublish -t npm --no-gh-release\"},".to_string(),
+        format!("  \"napi\": {{\"binaryName\": \"{package}-sdk\", \"packageName\": \"{package}-sdk\", \"targets\": [\"x86_64-unknown-linux-gnu\", \"x86_64-unknown-linux-musl\", \"aarch64-unknown-linux-gnu\", \"aarch64-unknown-linux-musl\", \"x86_64-apple-darwin\", \"aarch64-apple-darwin\", \"x86_64-pc-windows-msvc\"]}},"),
+        "  \"dependencies\": {\"zod\": \"^4.4.3\"},".to_string(),
+        "  \"devDependencies\": {\"@napi-rs/cli\": \"^3.8.3\", \"@types/node\": \"^22.0.0\", \"tsx\": \"^4.20.3\", \"typescript\": \"^5.0.0\", \"vitest\": \"^3.0.0\"}".to_string(),
+        "}".to_string(),
+    ]
 }
 
 fn render_tsconfig() -> String {
-    "{\n  \"compilerOptions\": {\n    \"target\": \"ES2022\",\n    \"module\": \"NodeNext\",\n    \"moduleResolution\": \"NodeNext\",\n    \"strict\": true,\n    \"declaration\": true,\n    \"noUncheckedIndexedAccess\": true,\n    \"exactOptionalPropertyTypes\": true,\n    \"noImplicitOverride\": true,\n    \"outDir\": \"dist\"\n  },\n  \"include\": [\"src/**/*.ts\", \"tests/**/*.ts\"]\n}\n".to_string()
+    CodeWriter::from_lines([
+        "{",
+        "  \"compilerOptions\": {",
+        "    \"target\": \"ES2022\",",
+        "    \"module\": \"NodeNext\",",
+        "    \"moduleResolution\": \"NodeNext\",",
+        "    \"strict\": true,",
+        "    \"declaration\": true,",
+        "    \"noUncheckedIndexedAccess\": true,",
+        "    \"exactOptionalPropertyTypes\": true,",
+        "    \"noImplicitOverride\": true,",
+        "    \"outDir\": \"dist\"",
+        "  },",
+        "  \"include\": [\"src/**/*.ts\", \"tests/**/*.ts\"]",
+        "}",
+    ])
 }
 
-fn render_schemas(spec: &ApiSpec) -> String {
-    let mut output = String::from("import * as z from \"zod\";\n\n");
-    for (name, schema) in &spec.schemas {
-        output.push_str(&format!(
-            "export const {name}Schema = {};\n\n",
-            zod_schema(schema, spec)
-        ));
-    }
-    for operation in &spec.operations {
-        if let Some(schema) = inline_success_schema(operation) {
-            output.push_str(&format!(
-                "export const {}Schema = {};\n\n",
-                operation_response_name(operation),
-                zod_schema(schema, spec)
-            ));
-        }
-    }
-    output
+fn render_errors(spec: &ApiIr) -> String {
+    let imports = spec
+        .schemas
+        .keys()
+        .filter(|name| spec.operations.iter().any(|operation| {
+            operation
+                .responses
+                .iter()
+                .filter(|response| !response.status.starts_with('2'))
+                .any(|response| matches!(response.schema, Some(super::Schema::Reference(ref reference)) if reference == *name))
+        }))
+        .collect::<Vec<_>>();
+    let contracts = spec
+        .operations
+        .iter()
+        .filter(|operation| has_error_responses(operation))
+        .map(render_error_contract)
+        .collect::<String>();
+    CodeWriter::from_lines(error_file_lines(&imports, &contracts))
 }
 
-fn render_types(spec: &ApiSpec) -> String {
-    let mut output = String::from("import type * as z from \"zod\";\nimport { ");
-    output.push_str(
-        &spec
-            .schemas
-            .keys()
-            .map(|name| format!("{name}Schema"))
-            .collect::<Vec<_>>()
-            .join(", "),
-    );
-    output.push_str(" } from \"./schemas.js\";\n\n");
-    for name in spec.schemas.keys() {
-        output.push_str(&format!(
-            "export type {name} = z.infer<typeof {name}Schema>;\n"
-        ));
+fn error_file_lines(imports: &[&String], contracts: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    for name in imports {
+        lines.push(format!("import type {{ {name} }} from \"./types.js\";"));
+        lines.push(format!("import {{ {name}Schema }} from \"./schemas.js\";"));
     }
-    for operation in &spec.operations {
-        if inline_success_schema(operation).is_some() {
-            let name = operation_response_name(operation);
-            output.push_str(&format!(
-                "export type {name} = z.infer<typeof {name}Schema>;\n"
-            ));
-        }
-    }
-    output
+    lines.extend([
+        "import type { NativeValue } from \"./native.js\";".to_string(),
+        String::new(),
+        "export type NativeResult = { ok: true; value: NativeValue } | { ok: false; status: number; body: NativeValue };".to_string(),
+        String::new(),
+        "export class SdkValidationError extends Error {".to_string(),
+        "  readonly operation: string;".to_string(),
+        "  readonly model: string;".to_string(),
+        String::new(),
+        "  constructor(operation: string, model: string) {".to_string(),
+        "    super(`Response validation failed for ${operation} (${model})`);".to_string(),
+        "    this.name = \"SdkValidationError\";".to_string(),
+        "    this.operation = operation;".to_string(),
+        "    this.model = model;".to_string(),
+        "  }".to_string(),
+        "}".to_string(),
+        String::new(),
+        "export class SdkHttpError extends Error {".to_string(),
+        "  readonly status: number;".to_string(),
+        "  readonly body: NativeValue;".to_string(),
+        String::new(),
+        "  constructor(status: number, body: NativeValue) {".to_string(),
+        "    super(`API returned HTTP ${status}`);".to_string(),
+        "    this.name = \"SdkHttpError\";".to_string(),
+        "    this.status = status;".to_string(),
+        "    this.body = body;".to_string(),
+        "  }".to_string(),
+        "}".to_string(),
+        String::new(),
+    ]);
+    lines.extend(contracts.trim_end().lines().map(str::to_string));
+    lines
 }
 
-fn render_errors() -> String {
-    "export class SdkValidationError extends Error {\n  readonly operation: string;\n  readonly model: string;\n\n  constructor(operation: string, model: string) {\n    super(`Response validation failed for ${operation} (${model})`);\n    this.name = \"SdkValidationError\";\n    this.operation = operation;\n    this.model = model;\n  }\n}\n".to_string()
+fn has_error_responses(operation: &Operation) -> bool {
+    operation
+        .responses
+        .iter()
+        .any(|response| !response.status.starts_with('2'))
 }
 
-fn render_native_loader(spec: &ApiSpec) -> String {
+fn render_error_contract(operation: &Operation) -> String {
+    let operation_name = type_identifier(&operation.operation_id);
+    let name = format!("{operation_name}Error");
+    let variants = operation
+        .responses
+        .iter()
+        .filter(|response| !response.status.starts_with('2'))
+        .filter_map(|response| {
+            let status = response.status.parse::<u16>().ok()?;
+            let body_type = response
+                .schema
+                .as_ref()
+                .and_then(schema_model_name)
+                .unwrap_or_else(|| "NativeValue".to_string());
+            Some(vec![
+                format!("export class {operation_name}Status{status}Error extends {name} {{"),
+                format!("  readonly typedBody: {body_type};"),
+                String::new(),
+                format!("  constructor(status: number, body: {body_type}) {{"),
+                "    super(status, body);".to_string(),
+                "    this.typedBody = body;".to_string(),
+                "  }".to_string(),
+                "}".to_string(),
+                String::new(),
+            ])
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+    let arms = operation
+        .responses
+        .iter()
+        .filter(|response| !response.status.starts_with('2'))
+        .filter_map(|response| {
+            let status = response.status.parse::<u16>().ok()?;
+            let constructor = response
+                .schema
+                .as_ref()
+                .and_then(schema_model_name)
+                .map_or_else(|| format!("new {operation_name}Status{status}Error({status}, result.body)"), |model| {
+                    format!("new {operation_name}Status{status}Error({status}, {model}Schema.parse(result.body))")
+                });
+            Some(format!("      case {status}: return {constructor};"))
+        })
+        .collect::<Vec<_>>();
+    CodeWriter::from_lines(error_contract_lines(&name, &arms, &variants))
+}
+
+fn error_contract_lines(name: &str, arms: &[String], variants: &[String]) -> Vec<String> {
+    let mut lines = vec![
+        format!("export class {name} extends SdkHttpError {{"),
+        format!("  static from(result: {{ status: number; body: NativeValue }}): {name} {{"),
+        "    switch (result.status) {".to_string(),
+    ];
+    lines.extend(arms.iter().cloned());
+    lines.extend([
+        format!("      default: return new {name}(result.status, result.body);"),
+        "    }".to_string(),
+        "  }".to_string(),
+        "}".to_string(),
+        String::new(),
+    ]);
+    lines.extend(variants.iter().cloned());
+    lines
+}
+
+fn type_identifier(value: &str) -> String {
+    value
+        .split(['-', '_', ' ', '.'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_ascii_uppercase().to_string() + chars.as_str()
+            })
+        })
+        .collect()
+}
+
+fn render_native_loader(spec: &ApiIr) -> String {
     let methods = spec
         .operations
         .iter()
         .map(|operation| {
             format!(
-                "  {}({}): Promise<NativeValue>;\n",
+                "  {}({}): Promise<NativeResult>;\n",
                 ts_identifier(&operation.operation_id),
                 operation
                     .parameters
@@ -113,11 +250,34 @@ fn render_native_loader(spec: &ApiSpec) -> String {
         })
         .collect::<String>();
     format!(
-        "import {{ createRequire }} from \"node:module\";\n\nexport type NativeValue = null | boolean | number | string | NativeValue[] | {{ [key: string]: NativeValue }};\n\nexport interface NativeClient {{\n{methods}}}\n\ninterface NativeBinding {{\n  NativeClient: new (baseUrl: string) => NativeClient;\n}}\n\nexport function loadNative(baseUrl: string): NativeClient {{\n  const require = createRequire(import.meta.url);\n  const binding = require(\"../native/index.js\") as NativeBinding;\n  return new binding.NativeClient(baseUrl);\n}}\n"
+        "import binding from \"../native/index.js\";\n\nexport type NativeValue = null | boolean | number | string | NativeValue[] | {{ [key: string]: NativeValue }};\nexport type NativeResult = {{ ok: true; value: NativeValue }} | {{ ok: false; status: number; body: NativeValue }};\n\nexport interface NativeClient {{\n{methods}}}\n\ninterface NativeBinding {{\n  NativeClient: new (baseUrl: string) => NativeClient;\n}}\n\nconst nativeBinding = binding as NativeBinding;\n\nexport function loadNative(baseUrl: string): NativeClient {{\n  return new nativeBinding.NativeClient(baseUrl);\n}}\n"
     )
 }
 
-fn render_index(spec: &ApiSpec) -> String {
+fn render_native_declaration(spec: &ApiIr) -> String {
+    let methods = spec
+        .operations
+        .iter()
+        .map(|operation| {
+            format!(
+                "  {}({}): Promise<NativeResult>;\n",
+                ts_identifier(&operation.operation_id),
+                operation
+                    .parameters
+                    .iter()
+                    .filter(|parameter| parameter.location == super::ParameterLocation::Path)
+                    .map(|parameter| format!("{}: string", ts_identifier(&parameter.name)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+        .collect::<String>();
+    format!(
+        "export type NativeValue = null | boolean | number | string | NativeValue[] | {{ [key: string]: NativeValue }};\nexport type NativeResult = {{ ok: true; value: NativeValue }} | {{ ok: false; status: number; body: NativeValue }};\n\nexport declare class NativeClient {{\n{methods}}}\n\ndeclare const binding: {{ NativeClient: typeof NativeClient }};\nexport default binding;\n"
+    )
+}
+
+fn render_index(spec: &ApiIr) -> String {
     format!(
         "{}{}}}\n",
         render_index_header(spec),
@@ -125,7 +285,7 @@ fn render_index(spec: &ApiSpec) -> String {
     )
 }
 
-fn render_index_header(spec: &ApiSpec) -> String {
+fn render_index_header(spec: &ApiIr) -> String {
     let mut imports = spec
         .schemas
         .keys()
@@ -142,6 +302,17 @@ fn render_index_header(spec: &ApiSpec) -> String {
             "import {{ {name}Schema }} from \"./schemas.js\";\n"
         ));
     }
+    for operation in spec
+        .operations
+        .iter()
+        .filter(|operation| has_error_responses(operation))
+    {
+        imports.push_str(&format!(
+            "import {{ {}Error }} from \"./errors.js\";\n",
+            type_identifier(&operation.operation_id)
+        ));
+    }
+    imports.push_str("import { SdkHttpError } from \"./errors.js\";\n");
     let mut type_names = spec.schemas.keys().cloned().collect::<Vec<_>>();
     type_names.extend(response_names);
     let types = type_names.join(", ");
@@ -150,14 +321,14 @@ fn render_index_header(spec: &ApiSpec) -> String {
     )
 }
 
-fn render_index_methods(spec: &ApiSpec) -> String {
+fn render_index_methods(spec: &ApiIr) -> String {
     spec.operations
         .iter()
         .map(|operation| render_operation(operation, spec))
         .collect()
 }
 
-fn render_operation(operation: &Operation, _spec: &ApiSpec) -> String {
+fn render_operation(operation: &Operation, _spec: &ApiIr) -> String {
     let parameters = operation
         .parameters
         .iter()
@@ -170,41 +341,40 @@ fn render_operation(operation: &Operation, _spec: &ApiSpec) -> String {
         .iter()
         .find(|response| response.status.starts_with('2'))
         .and_then(|response| response.schema.as_ref());
-    let Some(response) = response else {
-        return render_void_operation(operation, &parameters);
-    };
-    let model = schema_model_name(response).unwrap_or_else(|| operation_response_name(operation));
-    let parser = format!("{model}Schema");
+    let method = ts_identifier(&operation.operation_id);
+    let arguments = operation
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.location == super::ParameterLocation::Path)
+        .map(|parameter| ts_identifier(&parameter.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let error = has_error_responses(operation)
+        .then(|| format!("{}Error", type_identifier(&operation.operation_id)));
+    let error_handling = error.as_ref().map_or_else(
+        || "      throw new SdkHttpError(result.status, result.body);\n".to_string(),
+        |error| format!("      throw {}.from(result);\n", error),
+    );
+    let success = response.map_or_else(
+        || "    return;\n".to_string(),
+        |response| {
+            let model =
+                schema_model_name(response).unwrap_or_else(|| operation_response_name(operation));
+            let parser = format!("{model}Schema");
+            format!("    return {parser}.parse(result.value);\n")
+        },
+    );
+    let return_type = response
+        .map(|response| {
+            schema_model_name(response).unwrap_or_else(|| operation_response_name(operation))
+        })
+        .unwrap_or_else(|| "void".to_string());
     format!(
-        "  async {}({parameters}): Promise<{model}> {{\n    const value = await this.native.{}({});\n    return {parser}.parse(value);\n  }}\n\n",
-        ts_identifier(&operation.operation_id),
-        ts_identifier(&operation.operation_id),
-        operation
-            .parameters
-            .iter()
-            .filter(|parameter| parameter.location == super::ParameterLocation::Path)
-            .map(|parameter| ts_identifier(&parameter.name))
-            .collect::<Vec<_>>()
-            .join(", "),
+        "  async {method}({parameters}): Promise<{return_type}> {{\n    const result = await this.native.{method}({arguments});\n    if (!result.ok) {{\n{error_handling}    }}\n{success}  }}\n\n"
     )
 }
 
-fn render_void_operation(operation: &Operation, parameters: &str) -> String {
-    format!(
-        "  async {}({parameters}): Promise<void> {{\n    await this.native.{}({});\n  }}\n\n",
-        ts_identifier(&operation.operation_id),
-        ts_identifier(&operation.operation_id),
-        operation
-            .parameters
-            .iter()
-            .filter(|parameter| parameter.location == super::ParameterLocation::Path)
-            .map(|parameter| ts_identifier(&parameter.name))
-            .collect::<Vec<_>>()
-            .join(", "),
-    )
-}
-
-fn render_validation_test(spec: &ApiSpec) -> String {
+fn render_validation_test(spec: &ApiIr) -> String {
     let Some(name) = spec.schemas.keys().next() else {
         return "import { describe, it } from \"vitest\";\n\ndescribe(\"generated schemas\", () => { it(\"has no models\", () => {}); });\n".to_string();
     };
@@ -213,11 +383,13 @@ fn render_validation_test(spec: &ApiSpec) -> String {
     )
 }
 
-fn render_client_test(spec: &ApiSpec) -> String {
+fn render_client_test(spec: &ApiIr) -> String {
     let Some(operation) = spec.operations.first() else {
         return "import { describe, it } from \"vitest\";\n\ndescribe(\"generated client\", () => { it(\"has no operations\", () => {}); });\n".to_string();
     };
     let method = ts_identifier(&operation.operation_id);
+    let success_json =
+        String::from_utf8(mock_success_body(spec, operation)).unwrap_or_else(|_| "{}".to_string());
     let arguments = operation
         .parameters
         .iter()
@@ -225,33 +397,19 @@ fn render_client_test(spec: &ApiSpec) -> String {
         .map(|_| "\"pet-1\"")
         .collect::<Vec<_>>()
         .join(", ");
-    let path = operation
-        .path
-        .split('{')
-        .enumerate()
-        .map(|(index, segment)| {
-            if index == 0 {
-                segment.to_string()
-            } else {
-                segment
-                    .split_once('}')
-                    .map_or_else(|| segment.to_string(), |parts| format!("pet-1{}", parts.1))
-            }
-        })
-        .collect::<String>();
     format!(
-        "import {{ createServer }} from \"node:http\";\nimport {{ afterAll, beforeAll, describe, expect, it }} from \"vitest\";\nimport {{ Client }} from \"../src/index.js\";\n\nconst server = createServer((_request, response) => {{\n  response.writeHead(200, {{ \"content-type\": \"application/json\" }});\n  response.end(JSON.stringify({{ id: \"pet-1\", name: \"Fluffy\" }}));\n}});\nlet baseUrl = \"\";\n\nbeforeAll(async () => {{\n  await new Promise<void>((resolve) => server.listen(0, \"127.0.0.1\", resolve));\n  const address = server.address();\n  if (address === null || typeof address === \"string\") throw new Error(\"mock server did not bind\");\n  baseUrl = `http://127.0.0.1:${{address.port}}`;\n}});\n\nafterAll(() => server.close());\n\ndescribe(\"generated native client\", () => {{\n  it(\"calls the Rust-backed local mock API\", async () => {{\n    const response = await new Client(baseUrl).{method}({arguments});\n    expect(response).toEqual({{ id: \"pet-1\", name: \"Fluffy\" }});\n    expect(\"{path}\").toContain(\"/pets/\");\n  }});\n}});\n"
+        "import {{ createServer }} from \"node:http\";\nimport {{ afterAll, beforeAll, describe, expect, it }} from \"vitest\";\nimport {{ Client }} from \"../src/index.js\";\n\nconst server = createServer((_request, response) => {{\n  response.writeHead(200, {{ \"content-type\": \"application/json\" }});\n  response.end(JSON.stringify({success_json}));\n}});\nlet baseUrl = \"\";\n\nbeforeAll(async () => {{\n  await new Promise<void>((resolve) => server.listen(0, \"127.0.0.1\", resolve));\n  const address = server.address();\n  if (address === null || typeof address === \"string\") throw new Error(\"mock server did not bind\");\n  baseUrl = `http://127.0.0.1:${{address.port}}`;\n}});\n\nafterAll(() => server.close());\n\ndescribe(\"generated native client\", () => {{\n  it(\"calls the Rust-backed local mock API\", async () => {{\n    const response = await new Client(baseUrl).{method}({arguments});\n    expect(response).toEqual({success_json});\n  }});\n}});\n"
     )
 }
 
-fn render_readme(spec: &ApiSpec) -> String {
+fn render_readme(spec: &ApiIr) -> String {
     format!(
         "# {} TypeScript SDK\n\nInstall dependencies, then run `npm run test:native`. The command builds the Rust-backed napi-rs addon, starts a local mock API, and verifies runtime response validation with Zod.\n",
         spec.title
     )
 }
 
-fn render_native_cargo(spec: &ApiSpec) -> String {
+fn render_native_cargo(spec: &ApiIr) -> String {
     let crate_name = rust_crate_name(spec);
     format!(
         "[package]\nname = \"{}-typescript-native\"\nversion = \"0.1.0\"\nedition = \"2024\"\nrust-version = \"1.97\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nnapi = {{ version = \"3.12\", features = [\"napi9\", \"tokio_rt\", \"serde-json\"] }}\nnapi-derive = \"3.6\"\nserde_json = \"1\"\n{} = {{ package = \"{}-sdk\", path = \"../../rust\" }}\n",
@@ -265,14 +423,25 @@ fn render_native_package() -> String {
     "{\n  \"type\": \"commonjs\"\n}\n".to_string()
 }
 
-fn render_native_rust(spec: &ApiSpec) -> String {
+fn render_native_rust(spec: &ApiIr) -> String {
     let methods = spec
         .operations
         .iter()
         .map(render_native_operation)
         .collect::<String>();
+    let error_imports = spec
+        .operations
+        .iter()
+        .filter(|operation| has_error_responses(operation))
+        .map(|operation| format!("{}Error", type_identifier(&operation.operation_id)))
+        .collect::<Vec<_>>();
+    let error_imports = if error_imports.is_empty() {
+        String::new()
+    } else {
+        format!(", {}", error_imports.join(", "))
+    };
     format!(
-        "use napi::bindgen_prelude::*;\nuse napi_derive::napi;\nuse {}::Client as RustClient;\n\n#[napi]\npub struct NativeClient {{\n    inner: RustClient,\n}}\n\n#[napi]\nimpl NativeClient {{\n    #[napi(constructor)]\n    pub fn new(base_url: String) -> Result<Self> {{\n        let inner = RustClient::builder(base_url).build().map_err(to_napi_error)?;\n        Ok(Self {{ inner }})\n    }}\n\n{methods}}}\n\nfn to_napi_error(error: impl std::fmt::Display) -> Error {{\n    Error::from_reason(error.to_string())\n}}\n",
+        "use napi::bindgen_prelude::*;\nuse napi_derive::napi;\nuse {}::{{Client as RustClient, SdkError{error_imports}}};\n\n#[napi]\npub struct NativeClient {{\n    inner: RustClient,\n}}\n\n#[napi]\nimpl NativeClient {{\n    #[napi(constructor)]\n    pub fn new(base_url: String) -> Result<Self> {{\n        let inner = RustClient::builder(base_url).build().map_err(to_napi_error)?;\n        Ok(Self {{ inner }})\n    }}\n\n{methods}}}\n\nfn to_napi_error(error: impl std::fmt::Display) -> Error {{\n    Error::from_reason(error.to_string())\n}}\n",
         rust_crate_name(spec),
     )
 }
@@ -292,166 +461,37 @@ fn render_native_operation(operation: &Operation) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let method = super::rust_identifier(&operation.operation_id);
+    let body = if has_error_responses(operation) {
+        let error_type = format!("{}Error", type_identifier(&operation.operation_id));
+        let arms = operation
+            .responses
+            .iter()
+            .filter(|response| !response.status.starts_with('2'))
+            .filter_map(|response| {
+                let status = response.status.parse::<u16>().ok()?;
+                let variant = format!("Status{status}");
+                let (pattern, body) = response.schema.as_ref().map_or_else(
+                    || (format!("{error_type}::{variant}"), "serde_json::Value::Null".to_string()),
+                    |_| (format!("{error_type}::{variant}(value)"), "value".to_string()),
+                );
+                Some(format!(
+                    "            Err({pattern}) => Ok(serde_json::json!({{\"ok\": false, \"status\": {status}, \"body\": {body}}})),\n"
+                ))
+            })
+            .collect::<String>();
+        format!(
+            "        match self.inner.{method}({arguments}).await {{\n            Ok(value) => Ok(serde_json::json!({{\"ok\": true, \"value\": value}})),\n            Err({error_type}::Unexpected {{ status, body }}) => Ok(serde_json::json!({{\"ok\": false, \"status\": status, \"body\": body}})),\n            Err({error_type}::Transport(error)) => Err(to_napi_error(error)),\n{arms}        }}"
+        )
+    } else {
+        format!(
+            "        match self.inner.{method}({arguments}).await {{\n            Ok(value) => Ok(serde_json::json!({{\"ok\": true, \"value\": value}})),\n            Err(SdkError::Http {{ status, body }}) => Ok(serde_json::json!({{\"ok\": false, \"status\": status, \"body\": body}})),\n            Err(error) => Err(to_napi_error(error)),\n        }}"
+        )
+    };
     format!(
-        "    #[napi]\n    pub async fn {method}(&self{parameters}) -> Result<serde_json::Value> {{\n        let value = self.inner.{method}({arguments}).await.map_err(to_napi_error)?;\n        serde_json::to_value(value).map_err(to_napi_error)\n    }}\n\n",
+        "    #[napi]\n    pub async fn {method}(&self{parameters}) -> Result<serde_json::Value> {{\n{body}\n    }}\n\n",
     )
 }
 
-fn rust_crate_name(spec: &ApiSpec) -> String {
+fn rust_crate_name(spec: &ApiIr) -> String {
     slug(&spec.title).replace('-', "_")
-}
-
-fn zod_schema(schema: &Schema, spec: &ApiSpec) -> String {
-    match schema {
-        Schema::String { .. } => "z.string()".to_string(),
-        Schema::Integer { .. } => "z.number().int()".to_string(),
-        Schema::Number { .. } => "z.number()".to_string(),
-        Schema::Boolean => "z.boolean()".to_string(),
-        Schema::Null => "z.null()".to_string(),
-        Schema::Array(item) => format!("z.array({})", zod_schema(item, spec)),
-        Schema::Object { .. } => zod_object_schema(schema, spec),
-        Schema::Enum(values) => format!(
-            "z.enum([{}])",
-            values
-                .iter()
-                .map(|value| format!("{:?}", value))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Schema::Reference(name) => format!("{name}Schema"),
-        Schema::Nullable(inner) => format!("{}.nullable()", zod_schema(inner, spec)),
-        Schema::OneOf(values) | Schema::AnyOf(values) => format!(
-            "z.union([{}])",
-            values
-                .iter()
-                .map(|value| zod_schema(value, spec))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Schema::AllOf(values) => values
-            .iter()
-            .map(|value| zod_schema(value, spec))
-            .reduce(|left, right| format!("z.intersection({left}, {right})"))
-            .unwrap_or_else(|| "z.never()".to_string()),
-    }
-}
-
-fn zod_object_schema(schema: &Schema, spec: &ApiSpec) -> String {
-    let Schema::Object {
-        properties,
-        required,
-        additional_properties,
-    } = schema
-    else {
-        return "z.never()".to_string();
-    };
-    let fields = properties
-        .iter()
-        .map(|(name, value)| {
-            let optional = if required.contains(name) {
-                ""
-            } else {
-                ".optional()"
-            };
-            format!(
-                "  {}: {}{},",
-                ts_property(name),
-                zod_schema(value, spec),
-                optional
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let object = format!("z.object({{\n{fields}\n}})");
-    match additional_properties.as_deref() {
-        Some(value) => format!("{object}.catchall({})", zod_schema(value, spec)),
-        None => format!("{object}.strict()"),
-    }
-}
-
-fn schema_model_name(schema: &Schema) -> Option<String> {
-    match schema {
-        Schema::Reference(name) => Some(name.clone()),
-        _ => None,
-    }
-}
-
-fn inline_success_schema(operation: &Operation) -> Option<&Schema> {
-    operation
-        .responses
-        .iter()
-        .find(|response| response.status.starts_with('2'))
-        .and_then(|response| response.schema.as_ref())
-        .filter(|schema| schema_model_name(schema).is_none())
-}
-
-fn operation_response_name(operation: &Operation) -> String {
-    format!("{}Response", type_identifier(&operation.operation_id))
-}
-
-fn type_identifier(value: &str) -> String {
-    ts_identifier(value)
-        .split(' ')
-        .map(|part| {
-            let mut chars = part.chars();
-            chars.next().map_or_else(String::new, |first| {
-                first.to_ascii_uppercase().to_string() + chars.as_str()
-            })
-        })
-        .collect()
-}
-
-fn ts_property(value: &str) -> String {
-    if value
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || character == '_')
-    {
-        value.to_string()
-    } else {
-        format!("{:?}", value)
-    }
-}
-
-fn ts_identifier(value: &str) -> String {
-    let mut output = String::new();
-    for part in value
-        .split(['-', '_', ' ', '.'])
-        .filter(|part| !part.is_empty())
-    {
-        append_identifier_part(&mut output, part);
-    }
-    if output.is_empty() {
-        "value".to_string()
-    } else {
-        output
-    }
-}
-
-fn append_identifier_part(output: &mut String, part: &str) {
-    if output.is_empty() {
-        output.push_str(part);
-        return;
-    }
-    let mut chars = part.chars();
-    if let Some(first) = chars.next() {
-        output.push(first.to_ascii_uppercase());
-    }
-    output.push_str(chars.as_str());
-}
-
-fn slug(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
 }

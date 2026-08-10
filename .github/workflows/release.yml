@@ -148,7 +148,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install 1.97.1 --profile minimal
-      - run: cargo +1.97.1 publish --workspace --locked
+      - run: bash scripts/publish_crates.sh "${GITHUB_REF_NAME#v}"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 

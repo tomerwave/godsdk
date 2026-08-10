@@ -52,29 +52,34 @@ struct ValidateArgs {
 
 pub fn run(cli: Cli) -> Result<(), godsdk_core::GenerationError> {
     match cli.command {
-        Command::Generate(args) => {
-            let mut request = GenerationRequest::new(args.source, args.output);
-            request.mode = generation_mode(args.dry_run, args.check);
-            request = request.with_targets(parse_targets(&args.targets)?);
-            request.prune = args.prune;
-            let result = generate(&request)?;
-            if request.mode == GenerationMode::DryRun {
-                for path in result.files {
-                    println!("would change {}", path.display());
-                }
-            }
-        }
-        Command::Validate(args) => {
-            let spec = godsdk_core::ApiSpec::from_path(args.spec)?;
-            println!(
-                "valid OpenAPI {}: {} ({} operations, {} schemas)",
-                spec.openapi_version,
-                spec.title,
-                spec.operations.len(),
-                spec.schemas.len()
-            );
+        Command::Generate(args) => run_generate(args),
+        Command::Validate(args) => run_validate(args),
+    }
+}
+
+fn run_generate(args: GenerateArgs) -> Result<(), godsdk_core::GenerationError> {
+    let mut request = GenerationRequest::new(args.source, args.output);
+    request.mode = generation_mode(args.dry_run, args.check);
+    request = request.with_targets(parse_targets(&args.targets)?);
+    request.prune = args.prune;
+    let result = generate(&request)?;
+    if request.mode == GenerationMode::DryRun {
+        for path in result.files {
+            println!("would change {}", path.display());
         }
     }
+    Ok(())
+}
+
+fn run_validate(args: ValidateArgs) -> Result<(), godsdk_core::GenerationError> {
+    let spec = godsdk_core::ApiSpec::from_path(args.spec)?;
+    println!(
+        "valid OpenAPI {}: {} ({} operations, {} schemas)",
+        spec.openapi_version,
+        spec.title,
+        spec.operations.len(),
+        spec.schemas.len()
+    );
     Ok(())
 }
 

@@ -111,3 +111,70 @@ paths:
         }
     );
 }
+
+#[test]
+fn canonicalizes_parameter_order_independently_of_document_order() {
+    let first = ApiSpec::parse(
+        r#"
+openapi: 3.1.1
+info: {title: Ordered, version: 1.0.0}
+paths:
+  /pets/{z}/{a}:
+    get:
+      operationId: getPet
+      parameters:
+        - {name: a, in: path, required: true}
+        - {name: z, in: path, required: true}
+      responses: {"200": {description: ok}}
+"#,
+    )
+    .unwrap_or_else(|error| panic!("first document parses: {error}"));
+    let second = ApiSpec::parse(
+        r#"
+openapi: 3.1.1
+info: {title: Ordered, version: 1.0.0}
+paths:
+  /pets/{z}/{a}:
+    get:
+      operationId: getPet
+      parameters:
+        - {name: z, in: path, required: true}
+        - {name: a, in: path, required: true}
+      responses: {"200": {description: ok}}
+"#,
+    )
+    .unwrap_or_else(|error| panic!("second document parses: {error}"));
+
+    assert_eq!(
+        first.operations[0].parameters,
+        second.operations[0].parameters
+    );
+}
+
+#[test]
+fn selects_response_media_types_in_canonical_order() {
+    let spec = ApiSpec::parse(
+        r##"
+openapi: 3.1.1
+info: {title: Media Types, version: 1.0.0}
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      responses:
+        "200":
+          content:
+            text/plain: {schema: {type: string}}
+            application/json: {schema: {$ref: "#/components/schemas/Pet"}}
+components:
+  schemas:
+    Pet: {type: object, properties: {name: {type: string}}}
+"##,
+    )
+    .unwrap_or_else(|error| panic!("document parses: {error}"));
+
+    assert!(matches!(
+        spec.operations[0].responses[0].schema,
+        Some(Schema::Reference(ref name)) if name == "Pet"
+    ));
+}

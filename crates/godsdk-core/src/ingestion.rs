@@ -331,8 +331,9 @@ fn parse_operation_schemas(
 fn first_content_schema(content: &serde_json::Value) -> Option<&serde_json::Value> {
     content
         .as_object()?
-        .values()
-        .find_map(|media| media.get("schema"))
+        .iter()
+        .min_by_key(|(media_type, _)| *media_type)
+        .and_then(|(_, media)| media.get("schema"))
 }
 
 fn normalize_parameters(
@@ -358,7 +359,25 @@ fn normalize_parameters(
             }
         }
     }
+    parameters.sort_by_key(|parameter| parameter_order(path, parameter));
     Ok(parameters)
+}
+
+fn parameter_order(path: &str, parameter: &Parameter) -> (u8, usize, String) {
+    if parameter.location == ParameterLocation::Path {
+        let position = path_parameters(path)
+            .iter()
+            .position(|name| name == &parameter.name)
+            .unwrap_or(usize::MAX);
+        return (0, position, parameter.name.clone());
+    }
+    let location = match parameter.location {
+        ParameterLocation::Query => 1,
+        ParameterLocation::Header => 2,
+        ParameterLocation::Cookie => 3,
+        ParameterLocation::Path => unreachable!("path parameters return above"),
+    };
+    (location, 0, parameter.name.clone())
 }
 
 fn validate_path_parameters(

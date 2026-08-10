@@ -9,11 +9,15 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+fn generated_fixture(name: &str) -> (tempfile::TempDir, GenerationRequest) {
+    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+    let request = GenerationRequest::new(fixture(name), output.path().join("generated"));
+    (output, request)
+}
+
 #[test]
 fn generates_a_compiling_rust_repository_skeleton() {
-    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
-    let request =
-        GenerationRequest::new(fixture("minimal-3.1.yaml"), output.path().join("generated"));
+    let (_output, request) = generated_fixture("minimal-3.1.yaml");
 
     let result = match generate(&request) {
         Ok(result) => result,
@@ -31,10 +35,14 @@ fn generates_a_compiling_rust_repository_skeleton() {
         .unwrap_or_else(|error| panic!("generated cargo manifest is readable: {error}"));
     assert!(cargo.contains("reqwest"));
     assert!(cargo.contains("tokio"));
-    let client = std::fs::read_to_string(request.output_path().join("sdk/rust/src/lib.rs"))
-        .unwrap_or_else(|error| panic!("generated client is readable: {error}"));
-    assert!(client.contains("pub struct ClientBuilder"));
-    assert!(client.contains("pub async fn"));
+    let builder =
+        std::fs::read_to_string(request.output_path().join("sdk/rust/src/client/builder.rs"))
+            .unwrap_or_else(|error| panic!("generated builder is readable: {error}"));
+    let operations =
+        std::fs::read_to_string(request.output_path().join("sdk/rust/src/operations/mod.rs"))
+            .unwrap_or_else(|error| panic!("generated operations are readable: {error}"));
+    assert!(builder.contains("pub struct ClientBuilder"));
+    assert!(operations.contains("pub async fn"));
     assert!(
         request
             .output_path()
@@ -48,9 +56,7 @@ fn generates_a_compiling_rust_repository_skeleton() {
 
 #[test]
 fn generated_client_calls_a_real_mock_server() {
-    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
-    let request =
-        GenerationRequest::new(fixture("minimal-3.1.yaml"), output.path().join("generated"));
+    let (_output, request) = generated_fixture("minimal-3.1.yaml");
     match generate(&request) {
         Ok(_) => {}
         Err(error) => panic!("generation succeeds: {error}"),
@@ -71,27 +77,29 @@ fn generated_client_calls_a_real_mock_server() {
 
 #[test]
 fn generated_typed_fixture_contains_rust_models_and_typed_response() {
-    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
-    let request = GenerationRequest::new(
-        fixture("parameters-and-errors-3.1.yaml"),
-        output.path().join("generated"),
-    );
+    let (_output, request) = generated_fixture("parameters-and-errors-3.1.yaml");
     generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
 
-    let models = std::fs::read_to_string(request.output_path().join("sdk/rust/src/models.rs"))
-        .unwrap_or_else(|error| panic!("generated models are readable: {error}"));
-    let client = std::fs::read_to_string(request.output_path().join("sdk/rust/src/lib.rs"))
-        .unwrap_or_else(|error| panic!("generated client is readable: {error}"));
+    let models = std::fs::read_to_string(
+        request
+            .output_path()
+            .join("sdk/rust/src/models/document.rs"),
+    )
+    .unwrap_or_else(|error| panic!("generated models are readable: {error}"));
+    let problem =
+        std::fs::read_to_string(request.output_path().join("sdk/rust/src/models/problem.rs"))
+            .unwrap_or_else(|error| panic!("generated problem model is readable: {error}"));
+    let client =
+        std::fs::read_to_string(request.output_path().join("sdk/rust/src/operations/mod.rs"))
+            .unwrap_or_else(|error| panic!("generated client is readable: {error}"));
     assert!(models.contains("pub struct Document"));
-    assert!(models.contains("pub struct Problem"));
+    assert!(problem.contains("pub struct Problem"));
     assert!(client.contains("Result<Document, SdkError>"));
 }
 
 #[test]
 fn generated_typescript_uses_zod_and_typed_facade() {
-    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
-    let request =
-        GenerationRequest::new(fixture("minimal-3.1.yaml"), output.path().join("generated"));
+    let (_output, request) = generated_fixture("minimal-3.1.yaml");
     generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
 
     let root = request.output_path().join("sdk/typescript");
@@ -123,6 +131,40 @@ fn generated_typescript_uses_zod_and_typed_facade() {
 }
 
 #[test]
+fn generated_clients_use_explicit_rust_modules_and_esm_native_loading() {
+    let (_output, request) = generated_fixture("minimal-3.1.yaml");
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+
+    for path in [
+        "sdk/rust/src/client/mod.rs",
+        "sdk/rust/src/client/auth.rs",
+        "sdk/rust/src/client/error.rs",
+        "sdk/rust/src/client/retry.rs",
+        "sdk/rust/src/client/transport.rs",
+        "sdk/rust/src/models/mod.rs",
+        "sdk/rust/src/models/pet.rs",
+        "sdk/rust/src/operations/mod.rs",
+    ] {
+        assert!(request.output_path().join(path).is_file(), "missing {path}");
+    }
+
+    let native =
+        std::fs::read_to_string(request.output_path().join("sdk/typescript/src/native.ts"))
+            .unwrap_or_else(|error| panic!("generated native loader is readable: {error}"));
+    assert!(native.contains("import binding from \"../native/index.js\";"));
+    assert!(!native.contains("createRequire"));
+
+    let godlint = request.output_path().join(".github/workflows/godlint.yml");
+    let release = request.output_path().join(".github/workflows/release.yml");
+    assert!(godlint.is_file() && release.is_file());
+    let release = std::fs::read_to_string(release)
+        .unwrap_or_else(|error| panic!("generated release workflow is readable: {error}"));
+    assert!(release.contains("Publish Rust SDK to crates.io"));
+    assert!(release.contains("Publish TypeScript SDK to npm"));
+    assert!(!release.contains("pypi"));
+}
+
+#[test]
 fn refuses_to_overwrite_a_non_empty_output_directory() {
     let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
     let generated = output.path().join("generated");
@@ -132,4 +174,80 @@ fn refuses_to_overwrite_a_non_empty_output_directory() {
 
     let request = GenerationRequest::new(fixture("minimal-3.1.yaml"), generated);
     assert!(generate(&request).is_err());
+}
+
+#[test]
+fn equivalent_openapi_ordering_generates_identical_rust_sources() {
+    let first = generate_source(
+        r#"
+openapi: 3.1.1
+info: {title: Ordered, version: 1.0.0}
+paths:
+  /pets/{z}/{a}:
+    get:
+      operationId: getPet
+      parameters:
+        - {name: a, in: path, required: true}
+        - {name: z, in: path, required: true}
+      responses: {"200": {description: ok}}
+"#,
+    );
+    let second = generate_source(
+        r#"
+openapi: 3.1.1
+info: {title: Ordered, version: 1.0.0}
+paths:
+  /pets/{z}/{a}:
+    get:
+      operationId: getPet
+      parameters:
+        - {name: z, in: path, required: true}
+        - {name: a, in: path, required: true}
+      responses: {"200": {description: ok}}
+"#,
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(first.join("sdk/rust/src/operations/mod.rs"))
+            .unwrap_or_else(|error| panic!("first operations are readable: {error}")),
+        std::fs::read_to_string(second.join("sdk/rust/src/operations/mod.rs"))
+            .unwrap_or_else(|error| panic!("second operations are readable: {error}")),
+    );
+}
+
+#[test]
+fn generated_rust_sources_are_parseable_ast_files() {
+    let (_output, request) = generated_fixture("parameters-and-errors-3.1.yaml");
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+    let source_root = request.output_path().join("sdk/rust/src");
+    for path in [
+        "lib.rs",
+        "client/mod.rs",
+        "client/auth.rs",
+        "client/builder.rs",
+        "client/error.rs",
+        "client/retry.rs",
+        "client/transport.rs",
+        "operations/mod.rs",
+        "models/mod.rs",
+        "models/document.rs",
+        "models/problem.rs",
+    ] {
+        let source = std::fs::read_to_string(source_root.join(path))
+            .unwrap_or_else(|error| panic!("generated source {path} is readable: {error}"));
+        let parsed = syn::parse_file(&source);
+        assert!(parsed.is_ok(), "generated source {path} is valid Rust");
+    }
+}
+
+fn generate_source(source: &str) -> PathBuf {
+    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+    let output_path = output.keep();
+    let source_path = output_path.join("openapi.yaml");
+    std::fs::write(&source_path, source)
+        .unwrap_or_else(|error| panic!("source is writable: {error}"));
+    let generated = output_path.join("generated");
+    generate(&GenerationRequest::new(&source_path, &generated))
+        .unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+    generated
 }

@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  agree:
+    name: Check the tag agrees with the release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require the tag to match the Rust SDK version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(cargo metadata --manifest-path sdk/rust/Cargo.toml --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          test "${TAG#v}" = "$version"
+
+  crates:
+    name: Publish Rust SDK to crates.io
+    needs: agree
+    runs-on: ubuntu-latest
+    environment: crates-io
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install 1.97.1 --profile minimal
+      - name: Publish Rust SDK
+        run: cargo +1.97.1 publish --manifest-path sdk/rust/Cargo.toml --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  npm-build:
+    name: Build TypeScript native target ${{ matrix.target }}
+    needs: agree
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install TypeScript SDK dependencies
+        working-directory: sdk/typescript
+        run: npm install --no-audit --no-fund
+      - name: Build native addon
+        working-directory: sdk/typescript
+        run: npx napi build --manifest-path native/Cargo.toml --platform --release --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-native-${{ matrix.target }}
+          path: sdk/typescript/native/*.node
+          if-no-files-found: error
+
+  npm:
+    name: Publish TypeScript SDK to npm
+    needs: [npm-build, agree]
+    runs-on: ubuntu-latest
+    environment: npm
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Install TypeScript SDK dependencies
+        working-directory: sdk/typescript
+        run: npm install --no-audit --no-fund
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: npm-native-*
+          path: artifacts
+      - name: Create platform packages
+        working-directory: sdk/typescript
+        run: npx napi create-npm-dirs
+      - name: Collect native artifacts
+        working-directory: sdk/typescript
+        run: npx napi artifacts --output-dir ../../artifacts --npm-dir npm
+      - name: Publish TypeScript SDK and native packages
+        working-directory: sdk/typescript
+        run: npm publish --access public --provenance
+
+  github:
+    name: Publish GitHub release
+    needs: [crates, npm]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create or update release
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TAG"
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi

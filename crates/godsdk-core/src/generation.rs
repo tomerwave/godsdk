@@ -5,8 +5,8 @@ use std::process::Command;
 use super::typescript::render_typescript_files;
 use super::{
     ApiSpec, GenerationError, GenerationRequest, GenerationResult, IngestionError, render_config,
-    render_manifest, render_readme, render_rust_cargo, render_rust_client, render_rust_mock_test,
-    render_rust_models, write_file,
+    render_manifest, render_readme, render_rust_cargo, render_rust_files, render_rust_mock_test,
+    write_file,
 };
 
 pub fn generate(request: &GenerationRequest) -> Result<GenerationResult, GenerationError> {
@@ -133,18 +133,9 @@ fn write_rust_sources(
     spec: &ApiSpec,
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
-    write_file(
-        root,
-        "sdk/rust/src/lib.rs",
-        &render_rust_client(spec),
-        generated,
-    )?;
-    write_file(
-        root,
-        "sdk/rust/src/models.rs",
-        &render_rust_models(spec),
-        generated,
-    )?;
+    for (path, contents) in render_rust_files(spec) {
+        write_file(root, &path, &contents, generated)?;
+    }
     write_file(
         root,
         "sdk/rust/tests/mock_server.rs",
@@ -154,9 +145,27 @@ fn write_rust_sources(
 }
 
 fn format_rust_sources(root: &Path) -> Result<(), GenerationError> {
-    format_rust_file(&root.join("sdk/rust/src/lib.rs"))?;
-    format_rust_file(&root.join("sdk/rust/src/models.rs"))?;
-    format_rust_file(&root.join("sdk/rust/tests/mock_server.rs"))
+    for directory in ["sdk/rust/src", "sdk/rust/tests"] {
+        format_rust_directory(&root.join(directory))?;
+    }
+    Ok(())
+}
+
+fn format_rust_directory(path: &Path) -> Result<(), GenerationError> {
+    fs::read_dir(path)
+        .map_err(|error| GenerationError::Format(error.to_string()))?
+        .map(|entry| entry.map_err(|error| GenerationError::Format(error.to_string())))
+        .try_for_each(|entry| format_rust_entry(&entry?.path()))
+}
+
+fn format_rust_entry(path: &Path) -> Result<(), GenerationError> {
+    if path.is_dir() {
+        return format_rust_directory(path);
+    }
+    if path.extension().is_some_and(|extension| extension == "rs") {
+        return format_rust_file(path);
+    }
+    Ok(())
 }
 
 fn format_rust_file(path: &Path) -> Result<(), GenerationError> {
@@ -209,6 +218,38 @@ fn write_metadata(
     spec: &ApiSpec,
     generated: &mut Vec<PathBuf>,
 ) -> Result<(), GenerationError> {
+    write_workflows(root, generated)?;
+    write_project_metadata(root, spec, generated)?;
+    write_attention_document(root, generated)
+}
+
+fn write_workflows(root: &Path, generated: &mut Vec<PathBuf>) -> Result<(), GenerationError> {
+    write_file(
+        root,
+        ".github/workflows/godlint.yml",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/godlint-workflow.yml"
+        )),
+        generated,
+    )?;
+    write_file(
+        root,
+        ".github/workflows/release.yml",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/release-workflow.yml"
+        )),
+        generated,
+    )?;
+    Ok(())
+}
+
+fn write_project_metadata(
+    root: &Path,
+    spec: &ApiSpec,
+    generated: &mut Vec<PathBuf>,
+) -> Result<(), GenerationError> {
     write_file(root, ".godsdk/config.yaml", &render_config(spec), generated)?;
     write_file(root, "godlint.yaml", &render_generated_godlint(), generated)?;
     write_file(
@@ -220,7 +261,13 @@ fn write_metadata(
         )),
         generated,
     )?;
-    write_file(root, "README.md", &render_readme(spec), generated)?;
+    write_file(root, "README.md", &render_readme(spec), generated)
+}
+
+fn write_attention_document(
+    root: &Path,
+    generated: &mut Vec<PathBuf>,
+) -> Result<(), GenerationError> {
     write_file(
         root,
         "NEEDS-YOUR-ATTENTION.md",

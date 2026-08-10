@@ -5,12 +5,14 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::Schema;
+use crate::ingestion_contracts::normalize_operation_contract;
 use crate::ingestion_refs::resolve_external_references;
 use crate::ingestion_security::{
     RawSecurityScheme, normalize_security_requirements, normalize_security_schemes,
 };
 use crate::ir::{
-    ApiIr, HttpMethod, Operation, Parameter, ParameterLocation, Response, SecurityScheme,
+    ApiIr, HttpMethod, Operation, Parameter, ParameterLocation, RequestBody, Response,
+    SecurityScheme,
 };
 use crate::schema::schema_from_value;
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -325,6 +327,7 @@ fn normalize_operation<'path, 'item, 'security>(
         request_body: data.request_body,
         response_statuses: data.response_statuses,
         request_body_schema: data.request_body_schema,
+        request_body_details: data.request_body_details,
         responses: data.responses,
         security: data.security,
     })
@@ -333,6 +336,7 @@ fn normalize_operation<'path, 'item, 'security>(
 struct NormalizedOperationData {
     request_body: bool,
     request_body_schema: Option<Schema>,
+    request_body_details: Option<RequestBody>,
     response_statuses: Vec<String>,
     responses: Vec<Response>,
     security: Option<Vec<crate::ir::SecurityRequirement>>,
@@ -343,16 +347,20 @@ fn normalize_operation_data(
     path: &str,
     security_schemes: &BTreeMap<String, SecurityScheme>,
 ) -> Result<NormalizedOperationData, IngestionError> {
-    let (request_body_schema, responses) = parse_operation_schemas(operation, path)?;
+    let (request_body_details, responses) =
+        normalize_operation_contract(operation.request_body.as_ref(), &operation.responses, path)?;
     let security = operation
         .security
         .as_ref()
         .map(|requirements| normalize_security_requirements(requirements, security_schemes))
         .transpose()?;
     Ok(NormalizedOperationData {
-        request_body: operation.request_body.is_some(),
+        request_body: request_body_details.is_some(),
         response_statuses: operation.responses.keys().cloned().collect(),
-        request_body_schema,
+        request_body_schema: request_body_details
+            .as_ref()
+            .and_then(|body| body.schema.clone()),
+        request_body_details,
         responses,
         security,
     })
@@ -377,43 +385,6 @@ fn operation_id(
     } else {
         Err(IngestionError::DuplicateOperationId { operation_id })
     }
-}
-
-fn parse_operation_schemas(
-    operation: &RawOperation,
-    path: &str,
-) -> Result<(Option<Schema>, Vec<Response>), IngestionError> {
-    let request_body_schema = operation
-        .request_body
-        .as_ref()
-        .and_then(|body| body.get("content"))
-        .and_then(first_content_schema)
-        .map(|schema| schema_from_value(schema, &format!("{path}.requestBody")))
-        .transpose()?;
-    let responses = operation
-        .responses
-        .iter()
-        .map(|(status, response)| {
-            let schema = response
-                .get("content")
-                .and_then(first_content_schema)
-                .map(|schema| schema_from_value(schema, &format!("{path} responses {status}")))
-                .transpose()?;
-            Ok(Response {
-                status: status.clone(),
-                schema,
-            })
-        })
-        .collect::<Result<Vec<_>, IngestionError>>()?;
-    Ok((request_body_schema, responses))
-}
-
-fn first_content_schema(content: &serde_json::Value) -> Option<&serde_json::Value> {
-    content
-        .as_object()?
-        .iter()
-        .min_by_key(|(media_type, _)| *media_type)
-        .and_then(|(_, media)| media.get("schema"))
 }
 
 fn normalize_parameters(

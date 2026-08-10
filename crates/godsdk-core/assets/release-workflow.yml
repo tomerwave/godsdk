@@ -113,7 +113,9 @@ jobs:
         run: npx napi artifacts --output-dir ../../artifacts --npm-dir npm
       - name: Publish TypeScript SDK and native packages
         working-directory: sdk/typescript
-        run: npm publish --access public --provenance
+        run: |
+          npx napi prepublish -t npm --no-gh-release --root-publisher npm --dry-run
+          npm publish --access public --provenance
 # GODSDK_TARGET: typescript:end
 
   github:

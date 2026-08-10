@@ -33,6 +33,21 @@ class ActionContractTests(unittest.TestCase):
         self.assertIn("contents: read", workflow)
         self.assertIn("contents: write", workflow)
 
+    def test_reusable_workflow_gates_generated_output_with_godsuite(self) -> None:
+        workflow = (ROOT / ".github/workflows/generate-sdk.yml").read_text()
+        for input_name, default in {
+            "godlint-version": "0.7.0",
+            "godharness-version": "0.1.6",
+        }.items():
+            self.assertGreaterEqual(workflow.count(f"{input_name}:"), 2)
+            self.assertIn(f"default: {default}", workflow)
+        self.assertEqual(workflow.count("tomerwave/godlint@"), 2)
+        self.assertEqual(workflow.count("Run Godharness on generated repository"), 1)
+        self.assertEqual(workflow.count("Run Godharness before commit"), 1)
+        self.assertEqual(workflow.count("sha256sum --check \"$asset.sha256\""), 2)
+        self.assertEqual(workflow.count("gh release download \"v$VERSION\" --repo tomerwave/godharness"), 2)
+        self.assertEqual(workflow.count("working-directory: ${{ inputs.output }}"), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

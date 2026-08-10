@@ -212,6 +212,8 @@ Publish a reusable workflow, for example `.github/workflows/generate-sdk.yml`, t
 - generated changes are summarized as an artifact or pull request before commit;
 - the workflow runs Godlint and Godharness against the generated repository before declaring
   success.
+- Godlint and Godharness versions are explicit reusable-workflow inputs; the Godharness release
+  archive is checksum-verified before it is added to the runner path.
 
 For a genuinely new repository, use a small starter repository/template containing the workflow.
 The Action should not create arbitrary repositories by default. Repository creation and push

@@ -26,6 +26,14 @@ on:
         required: false
         default: 0.1.2
         type: string
+      godlint-version:
+        required: false
+        default: 0.7.0
+        type: string
+      godharness-version:
+        required: false
+        default: 0.1.6
+        type: string
       output:
         required: false
         default: .
@@ -76,6 +84,14 @@ on:
         required: false
         default: 0.1.2
         type: string
+      godlint-version:
+        required: false
+        default: 0.7.0
+        type: string
+      godharness-version:
+        required: false
+        default: 0.1.6
+        type: string
       prune:
         required: true
         default: false
@@ -106,6 +122,28 @@ jobs:
           output: ${{ inputs.output }}
           mode: ${{ inputs.mode }}
           prune: ${{ inputs.prune }}
+      - name: Run Godlint on generated repository
+        uses: tomerwave/godlint@c8b7fbf11b0bf26dd4e23db30ec54f708f7391fe # v0.7.0
+        with:
+          version: ${{ inputs.godlint-version }}
+          working-directory: ${{ inputs.output }}
+          summary: true
+      - name: Install Godharness
+        env:
+          VERSION: ${{ inputs.godharness-version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="godharness-x86_64-unknown-linux-gnu.tar.gz"
+          directory="$RUNNER_TEMP/godharness"
+          mkdir -p "$directory"
+          gh release download "v$VERSION" --repo tomerwave/godharness --pattern "$asset*" --dir "$directory"
+          (cd "$directory" && sha256sum --check "$asset.sha256")
+          tar -xzf "$directory/$asset" -C "$directory"
+          echo "$directory" >> "$GITHUB_PATH"
+      - name: Run Godharness on generated repository
+        working-directory: ${{ inputs.output }}
+        run: godharness check
       - uses: actions/upload-artifact@v4
         with:
           name: godsdk-generated
@@ -134,6 +172,28 @@ jobs:
           output: ${{ inputs.output }}
           mode: write
           prune: ${{ inputs.prune }}
+      - name: Run Godlint before commit
+        uses: tomerwave/godlint@c8b7fbf11b0bf26dd4e23db30ec54f708f7391fe # v0.7.0
+        with:
+          version: ${{ inputs.godlint-version }}
+          working-directory: ${{ inputs.output }}
+          summary: true
+      - name: Install Godharness before commit
+        env:
+          VERSION: ${{ inputs.godharness-version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="godharness-x86_64-unknown-linux-gnu.tar.gz"
+          directory="$RUNNER_TEMP/godharness"
+          mkdir -p "$directory"
+          gh release download "v$VERSION" --repo tomerwave/godharness --pattern "$asset*" --dir "$directory"
+          (cd "$directory" && sha256sum --check "$asset.sha256")
+          tar -xzf "$directory/$asset" -C "$directory"
+          echo "$directory" >> "$GITHUB_PATH"
+      - name: Run Godharness before commit
+        working-directory: ${{ inputs.output }}
+        run: godharness check
       - name: Commit generated changes
         env:
           GH_TOKEN: ${{ github.token }}

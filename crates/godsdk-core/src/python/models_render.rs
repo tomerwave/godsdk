@@ -46,34 +46,52 @@ fn inline_request_schema(operation: &Operation) -> Option<&Schema> {
 }
 
 fn operation_request_name(operation: &Operation) -> String {
-    format!("{}Request", type_identifier(&operation.operation_id))
+    [
+        type_identifier(&operation.operation_id),
+        "Request".to_string(),
+    ]
+    .concat()
 }
 
 fn model_lines(name: &str, schema: &Schema, spec: &ApiIr) -> Vec<String> {
     if let Schema::Enum(values) = schema {
-        let mut lines = vec![format!("class {name}(str, Enum):")];
-        lines.extend(
-            values
-                .iter()
-                .map(|value| format!("    {} = {value:?}", enum_identifier(value))),
-        );
+        let mut lines = vec![["class ", name, "(str, Enum):"].concat()];
+        lines.extend(values.iter().map(|value| {
+            [
+                "    ".to_string(),
+                enum_identifier(value),
+                " = ".to_string(),
+                python_string_literal(value),
+            ]
+            .concat()
+        }));
         lines.push(String::new());
         return lines;
     }
     let mut lines = vec![
-        format!("class {name}(BaseModel):"),
+        ["class ", name, "(BaseModel):"].concat(),
         "    model_config = ConfigDict(extra=\"forbid\")".to_string(),
     ];
     lines.extend(object_fields(schema, spec).into_iter().map(
         |(property, property_schema, required)| {
             let annotation = python_type(&property_schema);
             if required {
-                format!("    {}: {annotation}", python_identifier(&property))
+                [
+                    "    ".to_string(),
+                    python_identifier(&property),
+                    ": ".to_string(),
+                    annotation,
+                ]
+                .concat()
             } else {
-                format!(
-                    "    {}: {annotation} | None = None",
-                    python_identifier(&property)
-                )
+                [
+                    "    ".to_string(),
+                    python_identifier(&property),
+                    ": ".to_string(),
+                    annotation,
+                    " | None = None".to_string(),
+                ]
+                .concat()
             }
         },
     ));
@@ -111,12 +129,12 @@ fn python_type(schema: &Schema) -> String {
         Schema::Number { .. } => "float".to_string(),
         Schema::Boolean => "bool".to_string(),
         Schema::Null => "None".to_string(),
-        Schema::Array(item) => format!("list[{}]", python_type(item)),
+        Schema::Array(item) => ["list[", python_type(item).as_str(), "]"].concat(),
         Schema::Object { .. } => "dict[str, JsonValue]".to_string(),
         Schema::Enum(_) | Schema::Reference(_) => {
             schema_model_name(schema).unwrap_or_else(|| "str".to_string())
         }
-        Schema::Nullable(inner) => format!("{} | None", python_type(inner)),
+        Schema::Nullable(inner) => [python_type(inner), " | None".to_string()].concat(),
         Schema::OneOf(values) | Schema::AnyOf(values) | Schema::AllOf(values) => values
             .iter()
             .map(python_type)
@@ -127,4 +145,13 @@ fn python_type(schema: &Schema) -> String {
 
 fn enum_identifier(value: &str) -> String {
     type_identifier(value).to_ascii_uppercase()
+}
+
+fn python_string_literal(value: &str) -> String {
+    [
+        "\"".to_string(),
+        value.chars().flat_map(char::escape_default).collect(),
+        "\"".to_string(),
+    ]
+    .concat()
 }

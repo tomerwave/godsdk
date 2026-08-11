@@ -6,6 +6,7 @@ use crate::ApiIr;
 
 mod builder;
 mod client;
+mod inline_types;
 mod mock;
 mod mock_sample;
 mod models;

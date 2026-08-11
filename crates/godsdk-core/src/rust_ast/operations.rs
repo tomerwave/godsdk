@@ -3,6 +3,7 @@ use quote::{format_ident, quote};
 
 use crate::{ApiIr, HttpMethod, Operation, ParameterLocation, Schema, SecuritySchemeKind};
 
+use super::inline_types;
 use super::request::{
     OperationBodyArgs, OperationBodyInput, OperationHelpersInput, operation_arguments,
     operation_body, operation_helpers,
@@ -10,6 +11,7 @@ use super::request::{
 use super::{literal, rust_identifier, rust_type_name};
 
 pub(super) fn render(spec: &ApiIr) -> TokenStream {
+    let inline_types = inline_types::render(spec);
     let methods = spec
         .operations
         .iter()
@@ -40,6 +42,7 @@ pub(super) fn render(spec: &ApiIr) -> TokenStream {
         use crate::models::*;
 
         #(#request_types)*
+        #inline_types
 
         #(#errors)*
 
@@ -124,6 +127,25 @@ fn render_request_type(operation: &Operation, spec: &ApiIr) -> TokenStream {
             #(pub #fields,)*
         }
     }
+}
+
+pub(super) fn inline_parameter_type_name(
+    operation: &Operation,
+    parameter: &crate::Parameter,
+) -> syn::Ident {
+    format_ident!(
+        "{}{}",
+        rust_type_name(&operation.operation_id),
+        rust_type_name(&parameter.name)
+    )
+}
+
+pub(super) fn inline_request_body_type_name(operation: &Operation) -> syn::Ident {
+    format_ident!("{}RequestBody", rust_type_name(&operation.operation_id))
+}
+
+pub(super) fn inline_response_type_name(operation: &Operation) -> syn::Ident {
+    format_ident!("{}Response", rust_type_name(&operation.operation_id))
 }
 
 fn request_type_name(operation: &Operation) -> proc_macro2::Ident {
@@ -380,7 +402,11 @@ fn response_type(operation: &Operation, spec: &ApiIr) -> TokenStream {
         .iter()
         .find(|response| response.status.starts_with('2') && response.schema.is_some())
         .and_then(|response| response.schema.as_ref())
-        .map(|schema| schema_tokens(schema, spec))
+        .map(|schema| {
+            let inline = matches!(schema, Schema::TypedEnum { .. })
+                .then(|| inline_response_type_name(operation));
+            schema_tokens_with_inline(schema, spec, inline.as_ref())
+        })
         .unwrap_or_else(|| quote! { String })
 }
 
@@ -394,6 +420,14 @@ fn is_string_response(operation: &Operation) -> bool {
 }
 
 fn schema_tokens(schema: &Schema, spec: &ApiIr) -> TokenStream {
+    schema_tokens_with_inline(schema, spec, None)
+}
+
+fn schema_tokens_with_inline(
+    schema: &Schema,
+    spec: &ApiIr,
+    inline: Option<&syn::Ident>,
+) -> TokenStream {
     match schema {
         Schema::Any => quote! { serde_json::Value },
         Schema::String {
@@ -403,7 +437,9 @@ fn schema_tokens(schema: &Schema, spec: &ApiIr) -> TokenStream {
         Schema::Integer { .. } => quote! { i64 },
         Schema::Number { .. } => quote! { f64 },
         Schema::Boolean => quote! { bool },
-        Schema::TypedEnum { base, .. } => schema_tokens(base, spec),
+        Schema::TypedEnum { base, .. } => {
+            inline.map_or_else(|| schema_tokens(base, spec), |ident| quote! { #ident })
+        }
         Schema::Null => quote! { () },
         Schema::Array(item) => {
             let item = schema_tokens(item, spec);

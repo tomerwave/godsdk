@@ -1,5 +1,6 @@
 use godsdk_core::{GenerationRequest, generate};
 use std::path::PathBuf;
+use std::process::Command;
 
 #[test]
 fn generated_rust_typed_scalars_validate_on_deserialization() {
@@ -19,4 +20,16 @@ fn generated_rust_typed_scalars_validate_on_deserialization() {
         std::fs::read_to_string(request.output_path().join("sdk/rust/src/operations/mod.rs"))
             .unwrap_or_else(|error| panic!("operation source is readable: {error}"));
     assert!(operation_source.contains("Limit"));
+    assert!(operation_source.contains("ListItemsOffset"));
+    assert!(operation_source.contains("impl TryFrom<i64> for ListItemsOffset"));
+    assert_generated_rust_compiles(request.output_path().join("sdk/rust"));
+}
+
+fn assert_generated_rust_compiles(path: PathBuf) {
+    let status = Command::new("cargo")
+        .args(["check", "--locked"])
+        .current_dir(path)
+        .status()
+        .unwrap_or_else(|error| panic!("generated Rust cargo check starts: {error}"));
+    assert!(status.success(), "generated Rust SDK compiles");
 }

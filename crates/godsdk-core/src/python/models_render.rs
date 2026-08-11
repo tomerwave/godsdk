@@ -54,106 +54,95 @@ fn operation_request_name(operation: &Operation) -> String {
 }
 
 fn model_lines(name: &str, schema: &Schema, spec: &ApiIr) -> Vec<String> {
-    if let Schema::Enum(values) = schema {
-        let mut lines = vec![["class ", name, "(str, Enum):"].concat()];
-        lines.extend(values.iter().map(|value| {
-            [
-                "    ".to_string(),
-                enum_identifier(value),
-                " = ".to_string(),
-                python_string_literal(value),
-            ]
-            .concat()
-        }));
-        lines.push(String::new());
+    if let Some(lines) = alias_lines(name, schema) {
         return lines;
     }
-    if let Schema::TypedEnum { values, .. } = schema {
-        let values = values
+    if let Some(lines) = enum_lines(name, schema) {
+        return lines;
+    }
+    object_model_lines(name, schema, spec)
+}
+
+fn enum_lines(name: &str, schema: &Schema) -> Option<Vec<String>> {
+    let Schema::Enum(values) = schema else {
+        return None;
+    };
+    let mut lines = vec![["class ", name, "(str, Enum):"].concat()];
+    lines.extend(values.iter().map(|value| {
+        [
+            "    ".to_string(),
+            enum_identifier(value),
+            " = ".to_string(),
+            python_string_literal(value),
+        ]
+        .concat()
+    }));
+    lines.push(String::new());
+    Some(lines)
+}
+
+fn alias_lines(name: &str, schema: &Schema) -> Option<Vec<String>> {
+    let expression = match schema {
+        Schema::TypedEnum { values, .. } => format!(
+            "Literal[{}]",
+            values
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Schema::OneOf(values) | Schema::AnyOf(values) => values
             .iter()
-            .map(ToString::to_string)
+            .map(python_type)
             .collect::<Vec<_>>()
-            .join(", ");
-        return vec![
-            [name, ": TypeAlias = Literal[", values.as_str(), "]"].concat(),
-            String::new(),
-        ];
-    }
-    if let Schema::OneOf(values) | Schema::AnyOf(values) = schema {
-        return vec![
-            [
-                name,
-                ": TypeAlias = ",
-                &values
-                    .iter()
-                    .map(python_type)
-                    .collect::<Vec<_>>()
-                    .join(" | "),
-            ]
-            .concat(),
-            String::new(),
-        ];
-    }
-    if matches!(
-        schema,
+            .join(" | "),
         Schema::String { .. }
-            | Schema::Integer { .. }
-            | Schema::Number { .. }
-            | Schema::Boolean
-            | Schema::Null
-            | Schema::Array(_)
-            | Schema::Reference(_)
-            | Schema::Nullable(_)
-    ) {
-        return vec![
-            [name, ": TypeAlias = ", &python_type(schema)].concat(),
-            String::new(),
-        ];
-    }
+        | Schema::Integer { .. }
+        | Schema::Number { .. }
+        | Schema::Boolean
+        | Schema::Null
+        | Schema::Array(_)
+        | Schema::Reference(_)
+        | Schema::Nullable(_) => python_type(schema),
+        _ => return None,
+    };
+    Some(vec![
+        [name, ": TypeAlias = ", &expression].concat(),
+        String::new(),
+    ])
+}
+
+fn object_model_lines(name: &str, schema: &Schema, spec: &ApiIr) -> Vec<String> {
     let mut lines = vec![
         ["class ", name, "(BaseModel):"].concat(),
         "    model_config = ConfigDict(extra=\"forbid\", populate_by_name=True)".to_string(),
     ];
-    lines.extend(object_fields(schema, spec).into_iter().map(
-        |(property, property_schema, required)| {
-            let annotation = python_type(&property_schema);
-            let identifier = python_identifier(&property);
-            let field = if identifier != property {
-                format!("Field(alias={property:?})")
-            } else {
-                String::new()
-            };
-            if required {
-                [
-                    "    ".to_string(),
-                    identifier,
-                    ": ".to_string(),
-                    annotation,
-                    if field.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" = {field}")
-                    },
-                ]
-                .concat()
-            } else {
-                [
-                    "    ".to_string(),
-                    python_identifier(&property),
-                    ": ".to_string(),
-                    annotation,
-                    if field.is_empty() {
-                        " | None = None".to_string()
-                    } else {
-                        format!(" | None = {field}")
-                    },
-                ]
-                .concat()
-            }
-        },
-    ));
+    lines.extend(object_fields(schema, spec).into_iter().map(render_field));
     lines.push(String::new());
     lines
+}
+
+fn render_field((property, property_schema, required): (String, Schema, bool)) -> String {
+    let identifier = python_identifier(&property);
+    let annotation = python_type(&property_schema);
+    let field = (identifier != property).then(|| format!("Field(alias={property:?})"));
+    let suffix = field.as_deref().map_or_else(
+        || {
+            if required {
+                String::new()
+            } else {
+                " | None = None".to_string()
+            }
+        },
+        |field| {
+            if required {
+                format!(" = {field}")
+            } else {
+                format!(" | None = {field}")
+            }
+        },
+    );
+    ["    ", &identifier, ": ", &annotation, &suffix].concat()
 }
 
 fn object_fields(schema: &Schema, spec: &ApiIr) -> Vec<(String, Schema, bool)> {

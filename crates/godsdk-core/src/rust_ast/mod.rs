@@ -89,22 +89,7 @@ pub(super) fn rust_type_name(value: &str) -> String {
 }
 
 pub(crate) fn rust_identifier(value: &str) -> String {
-    let mut result = String::new();
-    for (index, character) in value.chars().enumerate() {
-        if character.is_ascii_uppercase() && index > 0 {
-            result.push('_');
-        }
-        result.push(if character.is_ascii_alphanumeric() {
-            character.to_ascii_lowercase()
-        } else {
-            '_'
-        });
-    }
-    result = result
-        .split('_')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("_");
+    let mut result = normalize_identifier(value);
     if result
         .chars()
         .next()
@@ -118,58 +103,35 @@ pub(crate) fn rust_identifier(value: &str) -> String {
     result
 }
 
-fn is_rust_keyword(value: &str) -> bool {
-    matches!(
-        value,
-        "as" | "break"
-            | "const"
-            | "continue"
-            | "crate"
-            | "else"
-            | "enum"
-            | "extern"
-            | "false"
-            | "fn"
-            | "for"
-            | "if"
-            | "impl"
-            | "in"
-            | "let"
-            | "loop"
-            | "match"
-            | "mod"
-            | "move"
-            | "mut"
-            | "pub"
-            | "ref"
-            | "return"
-            | "self"
-            | "Self"
-            | "static"
-            | "struct"
-            | "super"
-            | "trait"
-            | "true"
-            | "type"
-            | "unsafe"
-            | "use"
-            | "where"
-            | "while"
-            | "async"
-            | "await"
-            | "dyn"
-            | "abstract"
-            | "become"
-            | "box"
-            | "do"
-            | "final"
-            | "macro"
-            | "override"
-            | "priv"
-            | "typeof"
-            | "unsized"
-            | "virtual"
-            | "yield"
-            | "try"
-    )
+fn normalize_identifier(value: &str) -> String {
+    value
+        .chars()
+        .enumerate()
+        .fold(String::new(), |mut result, (index, character)| {
+            if character.is_ascii_uppercase() && index > 0 {
+                result.push('_');
+            }
+            result.push(if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '_'
+            });
+            result
+        })
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("_")
 }
+
+fn is_rust_keyword(value: &str) -> bool {
+    RUST_KEYWORDS.contains(&value)
+}
+
+const RUST_KEYWORDS: &[&str] = &[
+    "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn", "for",
+    "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return",
+    "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where",
+    "while", "async", "await", "dyn", "abstract", "become", "box", "do", "final", "macro",
+    "override", "priv", "typeof", "unsized", "virtual", "yield", "try",
+];

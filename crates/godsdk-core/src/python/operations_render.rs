@@ -40,60 +40,58 @@ fn client_signature(operation: &Operation) -> (String, String, String) {
 }
 
 fn python_parameters(operation: &Operation) -> String {
-    let mut parameters = Vec::new();
-    if let Some(body) = operation
-        .request_body_details
-        .as_ref()
-        .filter(|body| body.required)
-    {
-        let ty = body
-            .schema
-            .as_ref()
-            .map(python_schema_type)
-            .unwrap_or_else(|| "JsonValue".to_string());
-        parameters.push(["request_body: ", &ty].concat());
-    }
-    parameters.extend(
-        ordered_parameters(operation)
-            .into_iter()
-            .filter(|parameter| parameter.required)
-            .map(|parameter| {
-                let name = python_identifier(&parameter.name);
-                let ty = if parameter.location == ParameterLocation::Path {
-                    "str".to_string()
-                } else {
-                    python_schema_type(&parameter.schema)
-                };
-                [name, ": ".to_string(), ty].concat()
-            }),
-    );
-    if let Some(body) = operation
-        .request_body_details
-        .as_ref()
-        .filter(|body| !body.required)
-    {
-        let ty = body
-            .schema
-            .as_ref()
-            .map(python_schema_type)
-            .unwrap_or_else(|| "JsonValue".to_string());
-        parameters.push(["request_body: ", &ty, " | None = None"].concat());
-    }
-    parameters.extend(
-        ordered_parameters(operation)
-            .into_iter()
-            .filter(|parameter| !parameter.required)
-            .map(|parameter| {
-                let name = python_identifier(&parameter.name);
-                let ty = if parameter.location == ParameterLocation::Path {
-                    "str".to_string()
-                } else {
-                    python_schema_type(&parameter.schema)
-                };
-                [name, ": ".to_string(), ty, " | None = None".to_string()].concat()
-            }),
-    );
+    let mut parameters = required_body_parameter(operation)
+        .into_iter()
+        .collect::<Vec<_>>();
+    parameters.extend(parameter_signatures(operation, true));
+    parameters.extend(optional_body_parameter(operation));
+    parameters.extend(parameter_signatures(operation, false));
     parameters.join(", ")
+}
+
+fn body_parameter(operation: &Operation, required: bool) -> Option<String> {
+    let body = operation
+        .request_body_details
+        .as_ref()
+        .filter(|body| body.required == required)?;
+    let ty = body
+        .schema
+        .as_ref()
+        .map(python_schema_type)
+        .unwrap_or_else(|| "JsonValue".to_string());
+    Some(if required {
+        ["request_body: ", &ty].concat()
+    } else {
+        ["request_body: ", &ty, " | None = None"].concat()
+    })
+}
+
+fn required_body_parameter(operation: &Operation) -> Option<String> {
+    body_parameter(operation, true)
+}
+
+fn optional_body_parameter(operation: &Operation) -> Option<String> {
+    body_parameter(operation, false)
+}
+
+fn parameter_signatures(operation: &Operation, required: bool) -> Vec<String> {
+    ordered_parameters(operation)
+        .into_iter()
+        .filter(|parameter| parameter.required == required)
+        .map(|parameter| {
+            let name = python_identifier(&parameter.name);
+            let ty = if parameter.location == ParameterLocation::Path {
+                "str".to_string()
+            } else {
+                python_schema_type(&parameter.schema)
+            };
+            if required {
+                [name, ": ".to_string(), ty].concat()
+            } else {
+                [name, ": ".to_string(), ty, " | None = None".to_string()].concat()
+            }
+        })
+        .collect()
 }
 
 fn client_method_body(
@@ -168,69 +166,51 @@ fn python_response_expression(operation: &Operation, return_type: &str) -> Strin
 }
 
 fn native_arguments(operation: &Operation) -> String {
-    let mut arguments = Vec::new();
-    if let Some(body) = operation
+    let mut arguments = required_body_argument(operation)
+        .into_iter()
+        .collect::<Vec<_>>();
+    arguments.extend(parameter_arguments(operation, true));
+    arguments.extend(optional_body_argument(operation));
+    arguments.extend(parameter_arguments(operation, false));
+    arguments.join(", ")
+}
+
+fn required_body_argument(operation: &Operation) -> Option<String> {
+    operation
         .request_body_details
         .as_ref()
         .filter(|body| body.required)
-    {
-        arguments.push(body_json_expression(body, "request_body"));
-    }
-    arguments.extend(
-        ordered_parameters(operation)
-            .into_iter()
-            .filter(|parameter| parameter.required)
-            .map(|parameter| {
-                let name = python_identifier(&parameter.name);
-                if parameter.location == ParameterLocation::Path {
-                    name
-                } else if parameter.required {
-                    ["json.dumps(", name.as_str(), ")"].concat()
-                } else {
-                    [
-                        "None if ",
-                        name.as_str(),
-                        " is None else json.dumps(",
-                        name.as_str(),
-                        ")",
-                    ]
-                    .concat()
-                }
-            }),
-    );
-    if let Some(body) = operation
+        .map(|body| body_json_expression(body, "request_body"))
+}
+
+fn optional_body_argument(operation: &Operation) -> Option<String> {
+    operation
         .request_body_details
         .as_ref()
         .filter(|body| !body.required)
-    {
-        arguments.push(format!(
-            "None if request_body is None else {}",
-            body_json_expression(body, "request_body")
-        ));
-    }
-    arguments.extend(
-        ordered_parameters(operation)
-            .into_iter()
-            .filter(|parameter| !parameter.required)
-            .map(|parameter| {
-                let name = python_identifier(&parameter.name);
-                if parameter.location == ParameterLocation::Path {
-                    name
-                } else if parameter.required {
-                    ["json.dumps(", name.as_str(), ")"].concat()
-                } else {
-                    [
-                        "None if ",
-                        name.as_str(),
-                        " is None else json.dumps(",
-                        name.as_str(),
-                        ")",
-                    ]
-                    .concat()
-                }
-            }),
-    );
-    arguments.join(", ")
+        .map(|body| {
+            format!(
+                "None if request_body is None else {}",
+                body_json_expression(body, "request_body")
+            )
+        })
+}
+
+fn parameter_arguments(operation: &Operation, required: bool) -> Vec<String> {
+    ordered_parameters(operation)
+        .into_iter()
+        .filter(|parameter| parameter.required == required)
+        .map(|parameter| {
+            let name = python_identifier(&parameter.name);
+            if parameter.location == ParameterLocation::Path {
+                name
+            } else if required {
+                ["json.dumps(", &name, ")"].concat()
+            } else {
+                ["None if ", &name, " is None else json.dumps(", &name, ")"].concat()
+            }
+        })
+        .collect()
 }
 
 fn ordered_parameters(operation: &Operation) -> Vec<&crate::Parameter> {

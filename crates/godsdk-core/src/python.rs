@@ -466,50 +466,18 @@ fn python_identifier(value: &str) -> String {
     {
         output.insert(0, '_');
     }
-    if matches!(
-        output.as_str(),
-        "and"
-            | "as"
-            | "assert"
-            | "async"
-            | "await"
-            | "break"
-            | "case"
-            | "class"
-            | "continue"
-            | "def"
-            | "del"
-            | "elif"
-            | "else"
-            | "except"
-            | "False"
-            | "finally"
-            | "for"
-            | "from"
-            | "global"
-            | "if"
-            | "import"
-            | "in"
-            | "is"
-            | "lambda"
-            | "match"
-            | "None"
-            | "nonlocal"
-            | "not"
-            | "or"
-            | "pass"
-            | "raise"
-            | "return"
-            | "True"
-            | "try"
-            | "while"
-            | "with"
-            | "yield"
-    ) {
+    if PYTHON_KEYWORDS.contains(&output.as_str()) {
         output.push('_');
     }
     output
 }
+
+const PYTHON_KEYWORDS: &[&str] = &[
+    "and", "as", "assert", "async", "await", "break", "case", "class", "continue", "def", "del",
+    "elif", "else", "except", "False", "finally", "for", "from", "global", "if", "import", "in",
+    "is", "lambda", "match", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True",
+    "try", "while", "with", "yield",
+];
 
 fn slug(value: &str) -> String {
     value

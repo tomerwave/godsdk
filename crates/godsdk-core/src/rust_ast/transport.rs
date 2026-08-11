@@ -194,6 +194,7 @@ fn handle_http_failure() -> TokenStream {
 }
 
 fn body_helpers() -> TokenStream {
+    let multipart = multipart_helpers();
     quote! {
         #[allow(dead_code)]
         pub(crate) enum RequestBody {
@@ -201,28 +202,7 @@ fn body_helpers() -> TokenStream {
             MultipartJson(Vec<u8>),
         }
 
-        fn multipart_form(bytes: &[u8]) -> Result<reqwest::multipart::Form, SdkError> {
-            let value: serde_json::Value = serde_json::from_slice(bytes)
-                .map_err(|error| SdkError::Serialization(error.to_string()))?;
-            let Some(object) = value.as_object() else {
-                return Err(SdkError::Serialization("multipart body must be an object".to_string()));
-            };
-            let mut form = reqwest::multipart::Form::new();
-            for (name, value) in object {
-                let part = match value {
-                    serde_json::Value::String(value) => reqwest::multipart::Part::text(value.clone()),
-                    serde_json::Value::Bool(value) => reqwest::multipart::Part::text(value.to_string()),
-                    serde_json::Value::Number(value) => reqwest::multipart::Part::text(value.to_string()),
-                    serde_json::Value::Array(values) if values.iter().all(|value| value.as_u64().is_some_and(|value| value <= 255)) => {
-                        let bytes = values.iter().filter_map(serde_json::Value::as_u64).map(|value| value as u8).collect::<Vec<_>>();
-                        reqwest::multipart::Part::bytes(bytes)
-                    }
-                    other => reqwest::multipart::Part::text(other.to_string()),
-                };
-                form = form.part(name.clone(), part);
-            }
-            Ok(form)
-        }
+        #multipart
 
         async fn read_body(response: reqwest::Response, limit: usize) -> Result<Vec<u8>, SdkError> {
             let body = response.bytes().await.map_err(|error| {
@@ -244,6 +224,39 @@ fn body_helpers() -> TokenStream {
                 Err(SdkError::ResponseTooLarge) => Ok(b"<response body omitted: limit exceeded>".to_vec()),
                 Err(error) => Err(error),
             }
+        }
+    }
+}
+
+fn multipart_helpers() -> TokenStream {
+    quote! {
+        fn multipart_form(bytes: &[u8]) -> Result<reqwest::multipart::Form, SdkError> {
+            let value: serde_json::Value = serde_json::from_slice(bytes)
+                .map_err(|error| SdkError::Serialization(error.to_string()))?;
+            let Some(object) = value.as_object() else {
+                return Err(SdkError::Serialization("multipart body must be an object".to_string()));
+            };
+            let mut form = reqwest::multipart::Form::new();
+            for (name, value) in object { form = form.part(name.clone(), multipart_part(value)); }
+            Ok(form)
+        }
+
+        fn multipart_part(value: &serde_json::Value) -> reqwest::multipart::Part {
+            match value {
+                serde_json::Value::Array(values) if is_byte_array(values) => reqwest::multipart::Part::bytes(byte_array(values)),
+                serde_json::Value::String(value) => reqwest::multipart::Part::text(value.clone()),
+                serde_json::Value::Bool(value) => reqwest::multipart::Part::text(value.to_string()),
+                serde_json::Value::Number(value) => reqwest::multipart::Part::text(value.to_string()),
+                other => reqwest::multipart::Part::text(other.to_string()),
+            }
+        }
+
+        fn is_byte_array(values: &[serde_json::Value]) -> bool {
+            values.iter().all(|value| value.as_u64().is_some_and(|value| value <= 255))
+        }
+
+        fn byte_array(values: &[serde_json::Value]) -> Vec<u8> {
+            values.iter().filter_map(serde_json::Value::as_u64).map(|value| value as u8).collect()
         }
     }
 }

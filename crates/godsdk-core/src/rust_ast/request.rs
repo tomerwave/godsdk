@@ -436,31 +436,43 @@ fn request_body_argument(
         .unwrap_or_else(|| quote! { serde_json::Value });
     let name = format_ident!("request_body");
     let content_type = literal(&request_body.content_type);
-    let constructor = if request_body.content_type == "multipart/form-data" {
-        quote! { RequestBody::MultipartJson }
-    } else {
-        quote! { |bytes| RequestBody::Bytes { content_type: #content_type, bytes } }
-    };
+    let constructor = request_body_constructor(&request_body.content_type, &content_type);
     if request_body.required {
         arguments.push(quote! { #name: #body_type });
-        let bytes = if request_body.content_type == "application/octet-stream" {
-            quote! { #name }
-        } else {
-            quote! { serde_json::to_vec(&#name).map_err(|error| SdkError::Serialization(error.to_string()))? }
-        };
+        let bytes = required_body_bytes(&request_body.content_type, &name);
         quote! {
             Some(#constructor(#bytes))
         }
     } else {
         arguments.push(quote! { #name: Option<#body_type> });
-        let bytes = if request_body.content_type == "application/octet-stream" {
-            quote! { value }
-        } else {
-            quote! { serde_json::to_vec(&value).map_err(|error| SdkError::Serialization(error.to_string()))? }
-        };
+        let bytes = optional_body_bytes(&request_body.content_type);
         quote! {
             #name.map(|value| #constructor(#bytes))
         }
+    }
+}
+
+fn request_body_constructor(content_type: &str, content_type_literal: &syn::LitStr) -> TokenStream {
+    if content_type == "multipart/form-data" {
+        quote! { RequestBody::MultipartJson }
+    } else {
+        quote! { |bytes| RequestBody::Bytes { content_type: #content_type_literal, bytes } }
+    }
+}
+
+fn required_body_bytes(content_type: &str, name: &syn::Ident) -> TokenStream {
+    if content_type == "application/octet-stream" {
+        quote! { #name }
+    } else {
+        quote! { serde_json::to_vec(&#name).map_err(|error| SdkError::Serialization(error.to_string()))? }
+    }
+}
+
+fn optional_body_bytes(content_type: &str) -> TokenStream {
+    if content_type == "application/octet-stream" {
+        quote! { value }
+    } else {
+        quote! { serde_json::to_vec(&value).map_err(|error| SdkError::Serialization(error.to_string()))? }
     }
 }
 

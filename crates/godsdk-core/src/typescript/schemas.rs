@@ -37,12 +37,24 @@ pub(super) fn render_schemas(spec: &ApiIr) -> String {
 }
 
 pub(super) fn render_types(spec: &ApiIr) -> String {
-    let mut schema_names = spec
+    let schema_names = schema_names(spec);
+    let schemas = schema_names.join(", ");
+    let mut lines = vec![
+        "import type * as z from \"zod\";".to_string(),
+        format!("import {{ {schemas} }} from \"./schemas.js\";"),
+        String::new(),
+    ];
+    lines.extend(type_alias_lines(spec));
+    CodeWriter::from_lines(lines)
+}
+
+fn schema_names(spec: &ApiIr) -> Vec<String> {
+    let mut names = spec
         .schemas
         .keys()
         .map(|name| format!("{name}Schema"))
         .collect::<Vec<_>>();
-    schema_names.extend(
+    names.extend(
         spec.operations
             .iter()
             .flat_map(|operation| {
@@ -58,35 +70,37 @@ pub(super) fn render_types(spec: &ApiIr) -> String {
             .flatten()
             .map(|name| format!("{name}Schema")),
     );
-    schema_names.sort();
-    schema_names.dedup();
-    let schemas = schema_names.join(", ");
-    let mut lines = vec![
-        "import type * as z from \"zod\";".to_string(),
-        format!("import {{ {schemas} }} from \"./schemas.js\";"),
-        String::new(),
-    ];
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn type_alias_lines(spec: &ApiIr) -> Vec<String> {
+    let mut lines = Vec::new();
     for name in spec.schemas.keys() {
-        let type_name = type_alias_name(name);
         lines.push(format!(
-            "export type {type_name} = z.infer<typeof {name}Schema>;"
+            "export type {} = z.infer<typeof {name}Schema>;",
+            type_alias_name(name)
         ));
     }
     for operation in &spec.operations {
-        if inline_success_schema(operation, spec).is_some() {
-            let name = operation_response_name(operation);
-            lines.push(format!(
-                "export type {name} = z.infer<typeof {name}Schema>;"
-            ));
-        }
-        if inline_request_schema(operation, spec).is_some() {
-            let name = operation_request_name(operation);
+        for name in [
+            inline_success_schema(operation, spec)
+                .is_some()
+                .then(|| operation_response_name(operation)),
+            inline_request_schema(operation, spec)
+                .is_some()
+                .then(|| operation_request_name(operation)),
+        ]
+        .into_iter()
+        .flatten()
+        {
             lines.push(format!(
                 "export type {name} = z.infer<typeof {name}Schema>;"
             ));
         }
     }
-    CodeWriter::from_lines(lines)
+    lines
 }
 
 pub(super) fn schema_model_name(schema: &Schema, spec: &ApiIr) -> Option<String> {

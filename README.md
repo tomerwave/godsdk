@@ -108,3 +108,7 @@ overridden manually for patch, minor, or major updates.
 
 See [release setup](docs/release-setup.md) for the external credentials and trusted-publisher
 configuration that cannot be generated safely.
+
+For automated generation in another repository, see the [GitHub Action and reusable workflow
+guide](docs/github-action.md). The checked-in [starter fixture](fixtures/action-starter) shows the
+smallest repository shape and starts in dry-run mode.

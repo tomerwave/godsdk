@@ -41,16 +41,27 @@ outputs:
   changed-files:
     description: Newline-separated generated paths changed by this invocation.
     value: ${{ steps.generate.outputs.changed-files }}
+  summary:
+    description: One-line generation summary for logs and calling workflows.
+    value: ${{ steps.generate.outputs.summary }}
+  generator-version:
+    description: Exact GodSDK generator version used by this invocation.
+    value: ${{ steps.install.outputs.generator-version }}
 runs:
   using: composite
   steps:
     - name: Install GodSDK generator
+      id: install
       shell: bash
       env:
         GODSDK_VERSION: ${{ inputs.generator-version }}
       run: |
         set -euo pipefail
         version="${GODSDK_VERSION#v}"
+        if ! [[ "${version}" =~ ^[0-9][A-Za-z0-9.+-]*$ ]]; then
+          echo "generator-version must be a release version such as 0.1.2" >&2
+          exit 1
+        fi
         case "${RUNNER_OS}-${RUNNER_ARCH}" in
           Linux-X64) target="x86_64-unknown-linux-gnu" ;;
           Linux-ARM64) target="aarch64-unknown-linux-gnu" ;;
@@ -59,21 +70,33 @@ runs:
           Windows-X64) target="x86_64-pc-windows-msvc" ;;
           *) echo "Unsupported runner: ${RUNNER_OS}-${RUNNER_ARCH}" >&2; exit 1 ;;
         esac
-        archive="godsdk-${version}-${target}.tar.gz"
+        extension="tar.gz"
+        if [ "${RUNNER_OS}" = "Windows" ]; then extension="zip"; fi
+        archive="godsdk-${version}-${target}.${extension}"
         base="https://github.com/tomerwave/godsdk/releases/download/v${version}"
-        mkdir -p "${RUNNER_TEMP}/godsdk"
-        curl --fail --location --retry 3 "${base}/${archive}" -o "${RUNNER_TEMP}/godsdk/${archive}"
-        curl --fail --location --retry 3 "${base}/${archive}.sha256" -o "${RUNNER_TEMP}/godsdk/${archive}.sha256"
+        directory="${RUNNER_TEMP}/godsdk/${version}/${target}"
+        mkdir -p "${directory}"
+        curl --fail --location --proto '=https' --tlsv1.2 --retry 3 "${base}/${archive}" -o "${directory}/${archive}"
+        curl --fail --location --proto '=https' --tlsv1.2 --retry 3 "${base}/${archive}.sha256" -o "${directory}/${archive}.sha256"
         if command -v sha256sum >/dev/null 2>&1; then
-          (cd "${RUNNER_TEMP}/godsdk" && sha256sum --check "${archive}.sha256")
+          (cd "${directory}" && sha256sum --check "${archive}.sha256")
         else
-          expected="$(awk '{print $1}' "${RUNNER_TEMP}/godsdk/${archive}.sha256")"
-          actual="$(shasum -a 256 "${RUNNER_TEMP}/godsdk/${archive}" | awk '{print $1}')"
+          expected="$(awk '{print $1}' "${directory}/${archive}.sha256")"
+          actual="$(shasum -a 256 "${directory}/${archive}" | awk '{print $1}')"
           test "${expected}" = "${actual}"
         fi
-        tar -xzf "${RUNNER_TEMP}/godsdk/${archive}" -C "${RUNNER_TEMP}/godsdk"
-        chmod +x "${RUNNER_TEMP}/godsdk/godsdk"
-        echo "${RUNNER_TEMP}/godsdk" >> "${GITHUB_PATH}"
+        if [ "${RUNNER_OS}" = "Windows" ]; then
+          7z x "${directory}/${archive}" "-o${directory}" >/dev/null
+          binary="${directory}/godsdk.exe"
+        else
+          tar -xzf "${directory}/${archive}" -C "${directory}"
+          binary="${directory}/godsdk"
+          chmod +x "${binary}"
+        fi
+        test -x "${binary}" || test -f "${binary}"
+        printf 'GODSDK_BIN=%s\n' "${binary}" >> "${GITHUB_ENV}"
+        echo "${directory}" >> "${GITHUB_PATH}"
+        echo "generator-version=${version}" >> "${GITHUB_OUTPUT}"
     - name: Generate SDK repository
       id: generate
       shell: bash
@@ -85,10 +108,14 @@ runs:
         OUTPUT: ${{ inputs.output }}
         MODE: ${{ inputs.mode }}
         PRUNE: ${{ inputs.prune }}
+        GENERATOR_VERSION: ${{ inputs.generator-version }}
         REMOTE_REF_HOSTS: ${{ inputs.remote-ref-hosts }}
         REMOTE_REF_PINS: ${{ inputs.remote-ref-pins }}
       run: |
         set -euo pipefail
+        case "${OUTPUT}" in
+          /*|../*|*/../*) echo "output must stay inside the checked-out repository" >&2; exit 1 ;;
+        esac
         if [ -n "${SPEC_PATH}" ] && [ -n "${SPEC_URL}" ]; then
           echo "spec-path and spec-url are mutually exclusive" >&2
           exit 1
@@ -98,6 +125,12 @@ runs:
           exit 1
         fi
         spec="${SPEC_PATH}"
+        if [ -n "${SPEC_PATH}" ]; then
+          case "${SPEC_PATH}" in
+            /*|../*|*/../*) echo "spec-path must stay inside the checked-out repository" >&2; exit 1 ;;
+          esac
+          test -f "${SPEC_PATH}" || { echo "spec-path does not exist: ${SPEC_PATH}" >&2; exit 1; }
+        fi
         if [ -n "${SPEC_URL}" ]; then
           if [ -z "${SPEC_SHA256}" ]; then
             echo "spec-sha256 is required when spec-url is used" >&2
@@ -107,6 +140,10 @@ runs:
             echo "spec-sha256 must be a 64-character hexadecimal SHA-256 digest" >&2
             exit 1
           fi
+          case "${SPEC_URL}" in
+            https://*) ;;
+            *) echo "spec-url must use https://" >&2; exit 1 ;;
+          esac
           SPEC_SHA256="${SPEC_SHA256,,}"
           spec="${RUNNER_TEMP}/godsdk/spec/openapi.yaml"
           mkdir -p "$(dirname "${spec}")"
@@ -140,10 +177,28 @@ runs:
         }
         append_values --remote-ref-host "${REMOTE_REF_HOSTS}"
         append_values --remote-ref-pin "${REMOTE_REF_PINS}"
-        godsdk "${args[@]}" | tee "${RUNNER_TEMP}/godsdk-output.log"
+        "${GODSDK_BIN}" "${args[@]}" | tee "${RUNNER_TEMP}/godsdk-output.log"
         changed="$(sed -n 's/^changed //p; s/^would change //p' "${RUNNER_TEMP}/godsdk-output.log")"
+        count="$(printf '%s\n' "${changed}" | sed '/^$/d' | wc -l | tr -d ' ')"
+        summary="${count} generated file(s) ${MODE}"
+        echo "${summary}"
+        {
+          echo "### GodSDK generation"
+          echo
+          echo "- Mode: \`${MODE}\`"
+          echo "- Targets: \`${TARGETS}\`"
+          echo "- Generator: \`${GENERATOR_VERSION#v}\`"
+          echo "- Result: ${summary}"
+          if [ -n "${changed}" ]; then
+            echo
+            echo '```text'
+            printf '%s\n' "${changed}"
+            echo '```'
+          fi
+        } >> "${GITHUB_STEP_SUMMARY}"
         {
           echo 'changed-files<<GODSDK_CHANGED_FILES'
           printf '%s\n' "${changed}"
           echo GODSDK_CHANGED_FILES
+          echo "summary=${summary}"
         } >> "${GITHUB_OUTPUT}"

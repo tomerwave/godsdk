@@ -16,6 +16,12 @@ class ActionContractTests(unittest.TestCase):
         self.assertIn("--remote-ref-pin", action)
         self.assertIn("id: generate", action)
         self.assertIn("steps.generate.outputs.changed-files", action)
+        self.assertIn("steps.generate.outputs.summary", action)
+        self.assertIn("steps.install.outputs.generator-version", action)
+        self.assertIn("spec-url must use https://", action)
+        self.assertIn("output must stay inside the checked-out repository", action)
+        self.assertIn("Windows-X64", action)
+        self.assertIn("7z x", action)
 
     def test_reusable_workflow_exposes_the_same_security_inputs(self) -> None:
         workflow = (ROOT / ".github/workflows/generate-sdk.yml").read_text()
@@ -32,6 +38,11 @@ class ActionContractTests(unittest.TestCase):
 
         self.assertIn("contents: read", workflow)
         self.assertIn("contents: write", workflow)
+        self.assertIn("concurrency:", workflow)
+        self.assertIn("godsdk/update-${{ github.run_id }}", workflow)
+        self.assertIn("Summarize generated changes", workflow)
+        self.assertIn("value: ${{ jobs.generate.outputs.changed-files }}", workflow)
+        self.assertIn("value: ${{ jobs.generate.outputs.summary }}", workflow)
 
     def test_reusable_workflow_gates_generated_output_with_godsuite(self) -> None:
         workflow = (ROOT / ".github/workflows/generate-sdk.yml").read_text()
@@ -47,6 +58,14 @@ class ActionContractTests(unittest.TestCase):
         self.assertEqual(workflow.count("sha256sum --check \"$asset.sha256\""), 2)
         self.assertEqual(workflow.count("gh release download \"v$VERSION\" --repo tomerwave/godharness"), 2)
         self.assertEqual(workflow.count("working-directory: ${{ inputs.output }}"), 4)
+
+    def test_fixture_starter_references_the_pinned_reusable_workflow(self) -> None:
+        starter = ROOT / "fixtures" / "action-starter" / ".github" / "workflows" / "generate-sdk.yml"
+        workflow = starter.read_text()
+        self.assertIn("workflow_dispatch", workflow)
+        self.assertIn("tomerwave/godsdk/.github/workflows/generate-sdk.yml@", workflow)
+        self.assertIn("spec-path: api/openapi.yaml", workflow)
+        self.assertIn("targets: rust,typescript,python", workflow)
 
 
 if __name__ == "__main__":

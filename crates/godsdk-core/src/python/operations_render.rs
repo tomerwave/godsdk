@@ -1,6 +1,8 @@
 use crate::code_writer::CodeWriter;
 use crate::rust_ast::{inline_parameter_type_name, inline_request_body_type_name};
 use crate::{Operation, ParameterLocation, Schema, rust_identifier};
+use proc_macro2::TokenStream;
+use quote::quote;
 
 use super::{
     has_error_responses, operation_response_name, python_identifier, schema_model_name,
@@ -309,16 +311,19 @@ fn schema_requires_alias(schema: &Schema) -> bool {
     }
 }
 
-pub(super) fn native_method(operation: &Operation, crate_name: &str) -> String {
+pub(super) fn native_method(operation: &Operation, crate_name: &str) -> TokenStream {
     let method = rust_identifier(&operation.operation_id);
     let (parameters, conversions, arguments) = native_inputs(operation, crate_name);
     let body = native_call_body(operation, &method, &arguments);
-    CodeWriter::from_parts([
+    let source = CodeWriter::from_parts([
         "    fn ".to_string(), method, "(&self".to_string(), parameters,
         ") -> PyResult<String> {\n".to_string(),
         "        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(to_python_error)?;\n".to_string(),
         conversions, body, "    }\n\n".to_string(),
-    ])
+    ]);
+    let item = syn::parse_str::<syn::ImplItemFn>(&source)
+        .unwrap_or_else(|error| panic!("Python native operation emitted invalid Rust: {error}"));
+    quote! { #item }
 }
 
 fn native_inputs(operation: &Operation, crate_name: &str) -> (String, String, String) {

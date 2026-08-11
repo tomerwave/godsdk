@@ -48,9 +48,7 @@ fn preserves_untyped_json_schemas_as_explicit_any_values() {
 
 #[test]
 fn preserves_typed_non_string_enums() {
-    assert!(
-        matches!(&parse("typed-enum-3.1.yaml").operations[0].parameters[0].schema, Schema::TypedEnum { base, values } if matches!(base.as_ref(), Schema::Integer { .. }) && values.len() == 3)
-    );
+    assert!(parse("typed-enum-3.1.yaml").operations[0].parameters.iter().any(|parameter| matches!(&parameter.schema, Schema::TypedEnum { base, values } if matches!(base.as_ref(), Schema::Integer { .. }) && values.len() == 3)));
 }
 
 #[test]

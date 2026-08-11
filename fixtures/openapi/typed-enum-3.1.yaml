@@ -10,8 +10,17 @@ paths:
         - name: limit
           in: query
           schema:
+            $ref: '#/components/schemas/Limit'
+        - name: offset
+          in: query
+          schema:
             type: integer
-            enum: [10, 20, 50]
+            enum: [0, 10, 20]
       responses:
         '200':
           description: Items
+components:
+  schemas:
+    Limit:
+      type: integer
+      enum: [10, 20, 50]

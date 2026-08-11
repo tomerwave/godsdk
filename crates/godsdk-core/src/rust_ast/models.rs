@@ -36,10 +36,7 @@ fn model_tokens(name: &str, schema: &Schema, spec: &ApiIr) -> TokenStream {
     let ident = format_ident!("{}", rust_type_name(name));
     let body = match schema {
         Schema::Enum(values) => render_enum(&ident, values),
-        Schema::TypedEnum { base, .. } => {
-            let ty = schema_tokens(base);
-            quote! { pub type #ident = #ty; }
-        }
+        Schema::TypedEnum { base, values } => render_typed_enum(&ident, base, values),
         Schema::OneOf(variants) | Schema::AnyOf(variants) => render_union(&ident, variants),
         Schema::Object { .. } | Schema::AllOf(_) => render_object(&ident, schema, spec),
         Schema::Reference(reference) => {
@@ -68,6 +65,69 @@ fn render_enum(ident: &syn::Ident, values: &[String]) -> TokenStream {
     quote! {
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
         pub enum #ident { #(#variants)* }
+    }
+}
+
+fn render_typed_enum(
+    ident: &syn::Ident,
+    base: &Schema,
+    values: &[serde_json::Value],
+) -> TokenStream {
+    let ty = schema_tokens(base);
+    let constants = values.iter().enumerate().map(|(index, value)| {
+        let name = format_ident!("VALUE_{index}");
+        let literal = scalar_literal(value);
+        quote! { pub const #name: Self = Self(#literal); }
+    });
+    let matches = values
+        .iter()
+        .map(scalar_literal)
+        .map(|literal| quote! { #literal => Ok(Self(value)), });
+    let serialize = scalar_serialize(base);
+    quote! {
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        pub struct #ident(pub #ty);
+
+        impl #ident {
+            #(#constants)*
+        }
+
+        impl TryFrom<#ty> for #ident {
+            type Error = &'static str;
+
+            fn try_from(value: #ty) -> Result<Self, Self::Error> {
+                match value { #(#matches)* _ => Err("value is not a member of the declared enum") }
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for #ident {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where D: serde::Deserializer<'de> {
+                let value = <#ty as serde::Deserialize>::deserialize(deserializer)?;
+                Self::try_from(value).map_err(serde::de::Error::custom)
+            }
+        }
+
+        impl serde::Serialize for #ident {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where S: serde::Serializer {
+                #serialize(serializer, self.0)
+            }
+        }
+    }
+}
+
+fn scalar_literal(value: &serde_json::Value) -> TokenStream {
+    let text = value.to_string();
+    syn::parse_str(&text).unwrap_or_else(|error| panic!("typed enum value is valid Rust: {error}"))
+}
+
+fn scalar_serialize(base: &Schema) -> TokenStream {
+    match base {
+        Schema::Integer { .. } => quote! { serde::Serializer::serialize_i64(serializer, self.0) },
+        Schema::Number { .. } => quote! { serde::Serializer::serialize_f64(serializer, self.0) },
+        Schema::Boolean => quote! { serde::Serializer::serialize_bool(serializer, self.0) },
+        _ => quote! { serde::Serializer::serialize_str(serializer, &self.0) },
     }
 }
 

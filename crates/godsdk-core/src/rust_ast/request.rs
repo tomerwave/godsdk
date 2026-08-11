@@ -6,6 +6,9 @@ use crate::{ApiIr, Operation, ParameterLocation, ParameterStyle, Schema};
 use super::operations::{error_decoder_name, method_tokens, response_decode};
 use super::{literal, rust_identifier, rust_type_name};
 
+mod multipart;
+use multipart::binary_fields;
+
 pub(super) struct RequestParts {
     pub(super) query: TokenStream,
     pub(super) headers: TokenStream,
@@ -436,7 +439,9 @@ fn request_body_argument(
         .unwrap_or_else(|| quote! { serde_json::Value });
     let name = format_ident!("request_body");
     let content_type = literal(&request_body.content_type);
-    let constructor = request_body_constructor(&request_body.content_type, &content_type);
+    let binary_fields = binary_fields(request_body.schema.as_ref(), spec);
+    let constructor =
+        request_body_constructor(&request_body.content_type, &content_type, &binary_fields);
     if request_body.required {
         arguments.push(quote! { #name: #body_type });
         let bytes = required_body_bytes(&request_body.content_type, &name);
@@ -452,9 +457,13 @@ fn request_body_argument(
     }
 }
 
-fn request_body_constructor(content_type: &str, content_type_literal: &syn::LitStr) -> TokenStream {
+fn request_body_constructor(
+    content_type: &str,
+    content_type_literal: &syn::LitStr,
+    binary_fields: &[syn::LitStr],
+) -> TokenStream {
     if content_type == "multipart/form-data" {
-        quote! { RequestBody::MultipartJson }
+        quote! { |bytes| RequestBody::Multipart { bytes, binary_fields: &[#(#binary_fields),*] } }
     } else {
         quote! { |bytes| RequestBody::Bytes { content_type: #content_type_literal, bytes } }
     }

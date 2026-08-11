@@ -463,8 +463,7 @@ fn request_body_argument(
     if request_body.required {
         arguments.push(quote! { #name: #body_type });
         let bytes = required_body_bytes(&request_body.content_type, &name);
-        let body_expression =
-            request_body_expression(&request_body.content_type, &binary_fields, quote! { bytes });
+        let body_expression = request_body_expression(&request_body.content_type, &binary_fields);
         quote! {
             {
                 let bytes = #bytes;
@@ -474,8 +473,7 @@ fn request_body_argument(
     } else {
         arguments.push(quote! { #name: Option<#body_type> });
         let bytes = optional_body_bytes(&request_body.content_type);
-        let body_expression =
-            request_body_expression(&request_body.content_type, &binary_fields, quote! { bytes });
+        let body_expression = request_body_expression(&request_body.content_type, &binary_fields);
         quote! {
             #name.map(|value| {
                 let bytes = #bytes;

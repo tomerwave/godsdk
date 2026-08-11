@@ -5,6 +5,9 @@ mod models_render;
 #[path = "python/operations_render.rs"]
 mod operations_render;
 
+use proc_macro2::TokenStream;
+use quote::{format_ident, quote};
+
 use super::code_writer::CodeWriter;
 use crate::{ApiIr, Operation, Schema, rust_identifier};
 use errors_render::{python_error_contract_lines, python_error_file_lines};
@@ -237,101 +240,85 @@ fn native_cargo(spec: &ApiIr) -> String {
 }
 
 fn native_rust(spec: &ApiIr) -> String {
+    let file = syn::parse2::<syn::File>(native_rust_tokens(spec))
+        .unwrap_or_else(|error| panic!("Python native generator emitted invalid Rust: {error}"));
+    prettyplease::unparse(&file)
+}
+
+fn native_rust_tokens(spec: &ApiIr) -> TokenStream {
     let crate_name = package_name(spec);
     let rust_crate_name = [crate_name.as_str(), "_sdk"].concat();
-    let methods = spec
+    let methods: Vec<TokenStream> = spec
         .operations
         .iter()
         .map(|operation| native_method(operation, &rust_crate_name))
-        .collect::<String>();
-    let helpers = spec
-        .operations
-        .iter()
-        .map(native_result_helper)
-        .collect::<String>();
-    let error_imports = spec
+        .collect();
+    let helpers: Vec<TokenStream> = spec.operations.iter().map(native_result_helper).collect();
+    let error_imports: Vec<syn::Ident> = spec
         .operations
         .iter()
         .filter(|operation| has_error_responses(operation))
-        .map(|operation| format!("{}Error", type_identifier(&operation.operation_id)))
-        .collect::<Vec<_>>();
-    let imports = native_imports(spec, &crate_name, &error_imports);
-    CodeWriter::from_parts([native_header(&imports), methods, native_footer(&helpers)])
-}
-
-fn native_imports(spec: &ApiIr, crate_name: &str, errors: &[String]) -> String {
-    let mut imports = String::from("use ");
-    imports.push_str(crate_name);
-    imports.push_str("_sdk::{Client as RustClient");
+        .map(|operation| format_ident!("{}Error", type_identifier(&operation.operation_id)))
+        .collect();
+    let crate_ident = format_ident!("{crate_name}_sdk");
+    let mut imports = vec![quote! { Client as RustClient }];
     if spec
         .operations
         .iter()
         .any(|operation| !has_error_responses(operation))
     {
-        imports.push_str(", SdkError");
+        imports.push(quote! { SdkError });
     }
-    if !errors.is_empty() {
-        imports.push_str(", ");
-        imports.push_str(&errors.join(", "));
+    imports.extend(error_imports.iter().map(|error| quote! { #error }));
+    native_rust_module(&crate_ident, &imports, &methods, &helpers)
+}
+
+fn native_rust_module(
+    crate_ident: &syn::Ident,
+    imports: &[TokenStream],
+    methods: &[TokenStream],
+    helpers: &[TokenStream],
+) -> TokenStream {
+    quote! {
+        use pyo3::prelude::*;
+        use #crate_ident::{#(#imports),*};
+        #[pyclass]
+        struct NativeClient { inner: RustClient }
+        #[pymethods]
+        impl NativeClient {
+            #[new]
+            fn new(base_url: String) -> PyResult<Self> {
+                let inner = RustClient::builder(base_url).build().map_err(to_python_error)?;
+                Ok(Self { inner })
+            }
+            #(#methods)*
+        }
+        fn encode_success_value(value: serde_json::Value) -> PyResult<String> {
+            serde_json::to_string(&serde_json::json!({"ok": true, "value": value})).map_err(to_python_error)
+        }
+        fn encode_http_error(status: u16, body: serde_json::Value) -> PyResult<String> {
+            serde_json::to_string(&serde_json::json!({"ok": false, "status": status, "body": body})).map_err(to_python_error)
+        }
+        #(#helpers)*
+        #[pymodule]
+        fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+            m.add_class::<NativeClient>()?;
+            Ok(())
+        }
+        fn to_python_error(error: impl std::fmt::Display) -> PyErr {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string())
+        }
     }
-    imports.push_str("};");
-    imports
 }
 
-fn native_header(imports: &str) -> String {
-    CodeWriter::from_lines([
-        "use pyo3::prelude::*;".to_string(),
-        imports.to_string(),
-        String::new(),
-        "#[pyclass]".to_string(),
-        "struct NativeClient {".to_string(),
-        "    inner: RustClient,".to_string(),
-        "}".to_string(),
-        String::new(),
-        "#[pymethods]".to_string(),
-        "impl NativeClient {".to_string(),
-        "    #[new]".to_string(),
-        "    fn new(base_url: String) -> PyResult<Self> {".to_string(),
-        "        let inner = RustClient::builder(base_url).build().map_err(to_python_error)?;"
-            .to_string(),
-        "        Ok(Self { inner })".to_string(),
-        "    }".to_string(),
-    ])
-}
-
-fn native_footer(helpers: &str) -> String {
-    CodeWriter::from_lines([
-        "}".to_string(),
-        String::new(),
-        "fn encode_success_value(value: serde_json::Value) -> PyResult<String> {".to_string(),
-        "    serde_json::to_string(&serde_json::json!({\"ok\": true, \"value\": value})).map_err(to_python_error)".to_string(),
-        "}".to_string(),
-        String::new(),
-        "fn encode_http_error(status: u16, body: serde_json::Value) -> PyResult<String> {".to_string(),
-        "    serde_json::to_string(&serde_json::json!({\"ok\": false, \"status\": status, \"body\": body})).map_err(to_python_error)".to_string(),
-        "}".to_string(),
-        String::new(),
-        helpers.to_string(),
-        "#[pymodule]".to_string(),
-        "fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {".to_string(),
-        "    m.add_class::<NativeClient>()?;".to_string(),
-        "    Ok(())".to_string(),
-        "}".to_string(),
-        String::new(),
-        "fn to_python_error(error: impl std::fmt::Display) -> PyErr {".to_string(),
-        "    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string())".to_string(),
-        "}".to_string(),
-    ])
-}
-
-fn native_result_helper(operation: &Operation) -> String {
+fn native_result_helper(operation: &Operation) -> TokenStream {
     if !has_error_responses(operation) {
-        return String::new();
+        return quote! {};
     }
     let method = rust_identifier(&operation.operation_id);
     let error_type = format!("{}Error", type_identifier(&operation.operation_id));
     let arms = native_result_arms(operation, &error_type);
-    CodeWriter::from_parts([
+    let source = CodeWriter::from_parts([
         "fn encode_".to_string(),
         method,
         "_error(error: ".to_string(),
@@ -343,7 +330,10 @@ fn native_result_helper(operation: &Operation) -> String {
         "::Transport(error) => Err(to_python_error(error)),\n".to_string(),
         arms,
         "    }\n}\n\n".to_string(),
-    ])
+    ]);
+    let item = syn::parse_str::<syn::ItemFn>(&source)
+        .unwrap_or_else(|error| panic!("Python native error helper emitted invalid Rust: {error}"));
+    quote! { #item }
 }
 
 fn native_result_arms(operation: &Operation, error_type: &str) -> String {

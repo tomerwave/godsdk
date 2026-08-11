@@ -120,8 +120,8 @@ fn build_request() -> TokenStream {
                     Some(RequestBody::Bytes { content_type, bytes }) => request
                         .header(header::CONTENT_TYPE, *content_type)
                         .body(bytes.clone()),
-                    Some(RequestBody::MultipartJson(bytes)) => {
-                        let form = multipart_form(bytes)?;
+                    Some(RequestBody::Multipart { bytes, binary_fields }) => {
+                        let form = multipart_form(bytes, binary_fields)?;
                         request.multipart(form)
                     }
                     None => request,
@@ -199,7 +199,7 @@ fn body_helpers() -> TokenStream {
         #[allow(dead_code)]
         pub(crate) enum RequestBody {
             Bytes { content_type: &'static str, bytes: Vec<u8> },
-            MultipartJson(Vec<u8>),
+            Multipart { bytes: Vec<u8>, binary_fields: &'static [&'static str] },
         }
 
         #multipart
@@ -230,20 +230,20 @@ fn body_helpers() -> TokenStream {
 
 fn multipart_helpers() -> TokenStream {
     quote! {
-        fn multipart_form(bytes: &[u8]) -> Result<reqwest::multipart::Form, SdkError> {
+        fn multipart_form(bytes: &[u8], binary_fields: &[&str]) -> Result<reqwest::multipart::Form, SdkError> {
             let value: serde_json::Value = serde_json::from_slice(bytes)
                 .map_err(|error| SdkError::Serialization(error.to_string()))?;
             let Some(object) = value.as_object() else {
                 return Err(SdkError::Serialization("multipart body must be an object".to_string()));
             };
             let mut form = reqwest::multipart::Form::new();
-            for (name, value) in object { form = form.part(name.clone(), multipart_part(value)); }
+            for (name, value) in object { form = form.part(name.clone(), multipart_part(name, value, binary_fields)); }
             Ok(form)
         }
 
-        fn multipart_part(value: &serde_json::Value) -> reqwest::multipart::Part {
+        fn multipart_part(name: &str, value: &serde_json::Value, binary_fields: &[&str]) -> reqwest::multipart::Part {
             match value {
-                serde_json::Value::Array(values) if is_byte_array(values) => reqwest::multipart::Part::bytes(byte_array(values)),
+                serde_json::Value::Array(values) if binary_fields.contains(&name) && is_byte_array(values) => reqwest::multipart::Part::bytes(byte_array(values)),
                 serde_json::Value::String(value) => reqwest::multipart::Part::text(value.clone()),
                 serde_json::Value::Bool(value) => reqwest::multipart::Part::text(value.to_string()),
                 serde_json::Value::Number(value) => reqwest::multipart::Part::text(value.to_string()),

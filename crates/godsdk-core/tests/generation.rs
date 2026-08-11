@@ -85,7 +85,7 @@ fn generated_rust_runtime_supports_multipart_and_binary_contracts() {
         std::fs::read_to_string(request.output_path().join("sdk/rust/src/operations/mod.rs"))
             .unwrap_or_else(|error| panic!("generated operation is readable: {error}"));
     assert!(transport.contains("Multipart"));
-    assert!(operation.contains("MultipartJson"));
+    assert!(operation.contains("binary_fields"));
     assert!(operation.contains("Vec<u8>"));
 }
 

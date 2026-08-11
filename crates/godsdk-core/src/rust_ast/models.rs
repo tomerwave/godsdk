@@ -77,18 +77,12 @@ fn render_typed_enum(
     values: &[serde_json::Value],
 ) -> TokenStream {
     let ty = schema_tokens(base);
-    let constants = values.iter().enumerate().map(|(index, value)| {
-        let name = format_ident!("VALUE_{index}");
-        let literal = scalar_literal(value);
-        quote! { pub const #name: Self = Self(#literal); }
-    });
-    let matches = values
-        .iter()
-        .map(scalar_literal)
-        .map(|literal| quote! { #literal => Ok(Self(value)), });
+    let constants = scalar_constants(base, values);
+    let matches = scalar_matches(base, values);
+    let derives = scalar_derives(base);
     let serialize = scalar_serialize(base);
     quote! {
-        #[derive(Debug, Clone, Copy, PartialEq)]
+        #derives
         pub struct #ident(pub #ty);
 
         impl #ident {
@@ -99,7 +93,7 @@ fn render_typed_enum(
             type Error = &'static str;
 
             fn try_from(value: #ty) -> Result<Self, Self::Error> {
-                match value { #(#matches)* _ => Err("value is not a member of the declared enum") }
+                #matches
             }
         }
 
@@ -131,6 +125,43 @@ pub(super) fn typed_enum_tokens(
 fn scalar_literal(value: &serde_json::Value) -> TokenStream {
     let text = value.to_string();
     syn::parse_str(&text).unwrap_or_else(|error| panic!("typed enum value is valid Rust: {error}"))
+}
+
+fn scalar_constants(base: &Schema, values: &[serde_json::Value]) -> Vec<TokenStream> {
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let name = format_ident!("VALUE_{index}");
+            let literal = scalar_literal(value);
+            if matches!(base, Schema::String { .. }) {
+                let name = format_ident!("value_{index}");
+                quote! { pub fn #name() -> Self { Self(#literal.to_string()) } }
+            } else {
+                quote! { pub const #name: Self = Self(#literal); }
+            }
+        })
+        .collect()
+}
+
+fn scalar_matches(base: &Schema, values: &[serde_json::Value]) -> TokenStream {
+    let arms = values
+        .iter()
+        .map(scalar_literal)
+        .map(|literal| quote! { #literal => Ok(Self(value)), });
+    if matches!(base, Schema::String { .. }) {
+        quote! { match value.as_str() { #(#arms)* _ => Err("value is not a member of the declared enum") } }
+    } else {
+        quote! { match value { #(#arms)* _ => Err("value is not a member of the declared enum") } }
+    }
+}
+
+fn scalar_derives(base: &Schema) -> TokenStream {
+    if matches!(base, Schema::String { .. }) {
+        quote! { #[derive(Debug, Clone, PartialEq)] }
+    } else {
+        quote! { #[derive(Debug, Clone, Copy, PartialEq)] }
+    }
 }
 
 fn scalar_serialize(base: &Schema) -> TokenStream {

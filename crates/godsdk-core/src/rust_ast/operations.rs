@@ -129,7 +129,7 @@ fn render_request_type(operation: &Operation, spec: &ApiIr) -> TokenStream {
     }
 }
 
-pub(super) fn inline_parameter_type_name(
+pub(crate) fn inline_parameter_type_name(
     operation: &Operation,
     parameter: &crate::Parameter,
 ) -> syn::Ident {
@@ -140,7 +140,7 @@ pub(super) fn inline_parameter_type_name(
     )
 }
 
-pub(super) fn inline_request_body_type_name(operation: &Operation) -> syn::Ident {
+pub(crate) fn inline_request_body_type_name(operation: &Operation) -> syn::Ident {
     format_ident!("{}RequestBody", rust_type_name(&operation.operation_id))
 }
 

@@ -37,6 +37,7 @@ pub(crate) fn render_files(spec: &ApiIr) -> Vec<(String, String)> {
 pub(crate) use mock::render as render_mock_test;
 pub(crate) use mock_sample::request_body as mock_request_body;
 pub(crate) use mock_sample::success_body as mock_success_body;
+pub(crate) use operations::{inline_parameter_type_name, inline_request_body_type_name};
 
 fn rust_file(path: &str, tokens: TokenStream) -> (String, String) {
     let file = syn::parse2::<syn::File>(tokens).unwrap_or_else(|error| {

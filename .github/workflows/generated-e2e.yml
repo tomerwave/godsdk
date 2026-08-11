@@ -35,7 +35,7 @@ jobs:
         run: |
           rm -rf /tmp/godsdk-generated
           cargo +1.97.1 run --quiet -p godsdk-cli -- generate \
-            --source fixtures/openapi/minimal-3.1.yaml \
+            --source fixtures/openapi/conformance-3.1.yaml \
             --output /tmp/godsdk-generated \
             --targets rust,python,typescript
 

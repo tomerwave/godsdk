@@ -1,0 +1,67 @@
+openapi: 3.1.0
+info:
+  title: Cross-language conformance API
+  version: 1.0.0
+paths:
+  /health:
+    get:
+      operationId: health
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: string
+                const: ok
+  /items:
+    get:
+      operationId: listItems
+      parameters:
+        - name: limit
+          in: query
+          required: true
+          schema:
+            type: integer
+            enum: [10, 20, 50]
+      responses:
+        '200':
+          description: Items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Item'
+  /uploads:
+    post:
+      operationId: uploadAsset
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/UploadForm'
+      responses:
+        '201':
+          description: Uploaded
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+components:
+  schemas:
+    Item:
+      type: object
+      required: [id, state]
+      properties:
+        id: {type: integer}
+        state: {type: string, enum: [ready, failed]}
+        version: {type: integer, const: 1}
+    UploadForm:
+      type: object
+      required: [name, file]
+      properties:
+        name: {type: string}
+        file: {type: string, format: binary}

@@ -41,7 +41,8 @@ fn generated_targets_propagate_typed_request_contracts() {
             "request_body: DocumentInput",
             "serialize_parameter_value(",
             "serialize_cookie_value(",
-            "serde_json::to_string(&request_body)",
+            "serde_json::to_vec(&request_body)",
+            "RequestBody::Bytes",
         ],
     );
     assert_file_contains(

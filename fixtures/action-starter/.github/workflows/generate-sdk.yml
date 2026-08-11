@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   generate:
-    uses: tomerwave/godsdk/.github/workflows/generate-sdk.yml@v0.1.2
+    uses: tomerwave/godsdk/.github/workflows/generate-sdk.yml@d50d7166003259bdd270a7486bcf7a424a099d88 # v0.1.2
     with:
       spec-path: api/openapi.yaml
       targets: rust,typescript,python

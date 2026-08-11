@@ -1,7 +1,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use crate::{ApiIr, Operation, ParameterLocation, ParameterStyle, Schema};
+use crate::{ApiIr, Operation, ParameterLocation, ParameterStyle, RequestBody, Schema};
 
 use super::operations::{
     error_decoder_name, inline_parameter_type_name, inline_request_body_type_name, method_tokens,
@@ -451,30 +451,14 @@ fn request_body_argument(
     let Some(request_body) = operation.request_body_details.as_ref() else {
         return quote! { None };
     };
-    let body_type = request_body
-        .schema
-        .as_ref()
-        .map(|schema| {
-            let inline = matches!(schema, Schema::TypedEnum { .. } | Schema::Const { .. })
-                .then(|| inline_request_body_type_name(operation));
-            parameter_type(schema, spec, inline.as_ref())
-        })
-        .unwrap_or_else(|| quote! { serde_json::Value });
+    let body_type = request_body_type(operation, spec, request_body);
     let name = format_ident!("request_body");
-    let content_type = literal(&request_body.content_type);
     let binary_fields = binary_fields(request_body.schema.as_ref(), spec);
-    let body_expression = |bytes: TokenStream| {
-        request_body_expression(
-            &request_body.content_type,
-            &content_type,
-            &binary_fields,
-            bytes,
-        )
-    };
     if request_body.required {
         arguments.push(quote! { #name: #body_type });
         let bytes = required_body_bytes(&request_body.content_type, &name);
-        let body_expression = body_expression(quote! { bytes });
+        let body_expression =
+            request_body_expression(&request_body.content_type, &binary_fields, quote! { bytes });
         quote! {
             {
                 let bytes = #bytes;
@@ -484,7 +468,8 @@ fn request_body_argument(
     } else {
         arguments.push(quote! { #name: Option<#body_type> });
         let bytes = optional_body_bytes(&request_body.content_type);
-        let body_expression = body_expression(quote! { bytes });
+        let body_expression =
+            request_body_expression(&request_body.content_type, &binary_fields, quote! { bytes });
         quote! {
             #name.map(|value| {
                 let bytes = #bytes;
@@ -494,12 +479,28 @@ fn request_body_argument(
     }
 }
 
+fn request_body_type(
+    operation: &Operation,
+    spec: &ApiIr,
+    request_body: &RequestBody,
+) -> TokenStream {
+    request_body
+        .schema
+        .as_ref()
+        .map(|schema| {
+            let inline = matches!(schema, Schema::TypedEnum { .. } | Schema::Const { .. })
+                .then(|| inline_request_body_type_name(operation));
+            parameter_type(schema, spec, inline.as_ref())
+        })
+        .unwrap_or_else(|| quote! { serde_json::Value })
+}
+
 fn request_body_expression(
     content_type: &str,
-    content_type_literal: &syn::LitStr,
     binary_fields: &[syn::LitStr],
     bytes: TokenStream,
 ) -> TokenStream {
+    let content_type_literal = literal(content_type);
     if content_type == "multipart/form-data" {
         quote! { RequestBody::Multipart { bytes: #bytes, binary_fields: &[#(#binary_fields),*] } }
     } else {

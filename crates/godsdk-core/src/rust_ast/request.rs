@@ -502,7 +502,7 @@ fn request_body_expression(
 ) -> TokenStream {
     let content_type_literal = literal(content_type);
     if content_type == "multipart/form-data" {
-        quote! { RequestBody::Multipart { bytes: #bytes, binary_fields: &[#(#binary_fields),*] } }
+        quote! { RequestBody::Multipart { bytes, binary_fields: &[#(#binary_fields),*] } }
     } else {
         quote! { RequestBody::Bytes { content_type: #content_type_literal, bytes: #bytes } }
     }

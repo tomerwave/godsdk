@@ -20,10 +20,31 @@ pub(super) fn render_mod() -> TokenStream {
         };
         #[allow(unused_imports)]
         pub(crate) use parameter_serialization::{
-            serialize_cookie_value, serialize_parameter_value, serialize_path_parameter_value,
+            serialize_cookie_value, serialize_form_body, serialize_parameter_value,
+            serialize_path_parameter_value,
         };
         #[allow(unused_imports)]
         pub(crate) use transport::{HttpResponse, RequestBody, RequestOptions};
+
+        pub(crate) fn form_request_body<T: serde::Serialize>(
+            value: T,
+        ) -> Result<Option<RequestBody>, SdkError> {
+            let bytes = serialize_form_body(value)?;
+            Ok(Some(RequestBody::Bytes {
+                content_type: "application/x-www-form-urlencoded",
+                bytes,
+            }))
+        }
+
+        #[allow(dead_code)]
+        pub(crate) fn optional_form_request_body<T: serde::Serialize>(
+            value: Option<T>,
+        ) -> Result<Option<RequestBody>, SdkError> {
+            match value {
+                Some(value) => form_request_body(value),
+                None => Ok(None),
+            }
+        }
     }
 }
 

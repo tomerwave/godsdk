@@ -20,6 +20,8 @@ fn rust_form_bodies_use_urlencoded_serialization() {
     let source =
         std::fs::read_to_string(request.output_path().join("sdk/rust/src/operations/mod.rs"))
             .unwrap_or_else(|error| panic!("generated operations are readable: {error}"));
-    assert!(source.contains("serde_urlencoded::to_string(request_body)"));
-    assert!(source.contains("application/x-www-form-urlencoded"));
+    assert!(source.contains("form_request_body(request_body)"));
+    let client = std::fs::read_to_string(request.output_path().join("sdk/rust/src/client/mod.rs"))
+        .unwrap_or_else(|error| panic!("generated client is readable: {error}"));
+    assert!(client.contains("application/x-www-form-urlencoded"));
 }

@@ -1,14 +1,17 @@
+use proc_macro2::TokenStream;
+use quote::{format_ident, quote};
+use syn::parse2;
+
 use super::operations_render::render_native_operation;
 use super::{has_error_responses, type_identifier};
 use crate::ApiIr;
-use crate::code_writer::CodeWriter;
 
 use super::identifiers::slug;
 
 pub(super) fn render_native_cargo(spec: &ApiIr) -> String {
     let crate_name = rust_crate_name(spec);
     let package = slug(&spec.title);
-    CodeWriter::from_lines([
+    [
         "[package]".to_string(),
         ["name = \"", &package, "-typescript-native\""].concat(),
         "version = \"0.1.0\"".to_string(),
@@ -30,7 +33,8 @@ pub(super) fn render_native_cargo(spec: &ApiIr) -> String {
             "-sdk\", path = \"../../rust\" }".to_string(),
         ]
         .concat(),
-    ])
+    ]
+    .join("\n")
 }
 
 pub(super) fn render_native_package() -> String {
@@ -39,67 +43,63 @@ pub(super) fn render_native_package() -> String {
 
 pub(super) fn render_native_rust(spec: &ApiIr) -> String {
     let crate_name = rust_crate_name(spec);
-    let methods = spec
+    let methods: Vec<TokenStream> = spec
         .operations
         .iter()
         .map(|operation| render_native_operation(operation, &crate_name))
-        .collect::<String>();
-    CodeWriter::from_parts([
-        native_rust_header(spec, &crate_name),
-        methods,
-        native_rust_footer(),
-    ])
+        .collect();
+    render_rust(native_rust_file(spec, &crate_name, &methods))
 }
 
-fn native_rust_header(spec: &ApiIr, crate_name: &str) -> String {
-    let mut imports = String::from("use ");
-    imports.push_str(crate_name);
-    imports.push_str("::{Client as RustClient");
+fn native_rust_file(spec: &ApiIr, crate_name: &str, methods: &[TokenStream]) -> TokenStream {
+    let crate_ident = format_ident!("{crate_name}");
+    let mut imports = vec![quote! { Client as RustClient }];
     if spec
         .operations
         .iter()
         .any(|operation| !has_error_responses(operation))
     {
-        imports.push_str(", SdkError");
+        imports.push(quote! { SdkError });
     }
     for operation in spec
         .operations
         .iter()
         .filter(|operation| has_error_responses(operation))
     {
-        imports.push_str(", ");
-        imports.push_str(&type_identifier(&operation.operation_id));
-        imports.push_str("Error");
+        let error = format_ident!("{}Error", type_identifier(&operation.operation_id));
+        imports.push(quote! { #error });
     }
-    imports.push_str("};");
-    CodeWriter::from_lines([
-        "use napi::bindgen_prelude::*;",
-        "use napi_derive::napi;",
-        imports.as_str(),
-        "",
-        "#[napi]",
-        "pub struct NativeClient {",
-        "    inner: RustClient,",
-        "}",
-        "",
-        "#[napi]",
-        "impl NativeClient {",
-        "    #[napi(constructor)]",
-        "    pub fn new(base_url: String) -> Result<Self> {",
-        "        let inner = RustClient::builder(base_url).build().map_err(to_napi_error)?;",
-        "        Ok(Self { inner })",
-        "    }",
-    ])
+    quote! {
+        use napi::bindgen_prelude::*;
+        use napi_derive::napi;
+        use #crate_ident::{#(#imports),*};
+
+        #[napi]
+        pub struct NativeClient {
+            inner: RustClient,
+        }
+
+        #[napi]
+        impl NativeClient {
+            #[napi(constructor)]
+            pub fn new(base_url: String) -> Result<Self> {
+                let inner = RustClient::builder(base_url).build().map_err(to_napi_error)?;
+                Ok(Self { inner })
+            }
+            #(#methods)*
+        }
+
+        fn to_napi_error(error: impl std::fmt::Display) -> Error {
+            Error::from_reason(error.to_string())
+        }
+    }
 }
 
-fn native_rust_footer() -> String {
-    CodeWriter::from_lines([
-        "}",
-        "",
-        "fn to_napi_error(error: impl std::fmt::Display) -> Error {",
-        "    Error::from_reason(error.to_string())",
-        "}",
-    ])
+fn render_rust(tokens: TokenStream) -> String {
+    let file = parse2::<syn::File>(tokens).unwrap_or_else(|error| {
+        panic!("TypeScript native generator emitted invalid Rust: {error}")
+    });
+    prettyplease::unparse(&file)
 }
 
 fn rust_crate_name(spec: &ApiIr) -> String {

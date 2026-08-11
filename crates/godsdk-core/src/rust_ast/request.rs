@@ -463,32 +463,47 @@ fn request_body_argument(
     let name = format_ident!("request_body");
     let content_type = literal(&request_body.content_type);
     let binary_fields = binary_fields(request_body.schema.as_ref(), spec);
-    let constructor =
-        request_body_constructor(&request_body.content_type, &content_type, &binary_fields);
+    let body_expression = |bytes: TokenStream| {
+        request_body_expression(
+            &request_body.content_type,
+            &content_type,
+            &binary_fields,
+            bytes,
+        )
+    };
     if request_body.required {
         arguments.push(quote! { #name: #body_type });
         let bytes = required_body_bytes(&request_body.content_type, &name);
+        let body_expression = body_expression(quote! { bytes });
         quote! {
-            Some(#constructor(#bytes))
+            {
+                let bytes = #bytes;
+                Some(#body_expression)
+            }
         }
     } else {
         arguments.push(quote! { #name: Option<#body_type> });
         let bytes = optional_body_bytes(&request_body.content_type);
+        let body_expression = body_expression(quote! { bytes });
         quote! {
-            #name.map(|value| #constructor(#bytes))
+            #name.map(|value| {
+                let bytes = #bytes;
+                #body_expression
+            })
         }
     }
 }
 
-fn request_body_constructor(
+fn request_body_expression(
     content_type: &str,
     content_type_literal: &syn::LitStr,
     binary_fields: &[syn::LitStr],
+    bytes: TokenStream,
 ) -> TokenStream {
     if content_type == "multipart/form-data" {
-        quote! { (|bytes| RequestBody::Multipart { bytes, binary_fields: &[#(#binary_fields),*] }) }
+        quote! { RequestBody::Multipart { bytes: #bytes, binary_fields: &[#(#binary_fields),*] } }
     } else {
-        quote! { (|bytes| RequestBody::Bytes { content_type: #content_type_literal, bytes }) }
+        quote! { RequestBody::Bytes { content_type: #content_type_literal, bytes: #bytes } }
     }
 }
 

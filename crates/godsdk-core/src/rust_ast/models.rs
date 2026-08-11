@@ -111,10 +111,18 @@ fn render_typed_enum(
         impl serde::Serialize for #ident {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where S: serde::Serializer {
-                #serialize(serializer, self.0)
+                #serialize
             }
         }
     }
+}
+
+pub(super) fn typed_enum_tokens(
+    ident: &syn::Ident,
+    base: &Schema,
+    values: &[serde_json::Value],
+) -> TokenStream {
+    render_typed_enum(ident, base, values)
 }
 
 fn scalar_literal(value: &serde_json::Value) -> TokenStream {

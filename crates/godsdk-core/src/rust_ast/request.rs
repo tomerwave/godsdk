@@ -3,11 +3,16 @@ use quote::{format_ident, quote};
 
 use crate::{ApiIr, Operation, ParameterLocation, ParameterStyle, Schema};
 
-use super::operations::{error_decoder_name, method_tokens, response_decode};
-use super::{literal, rust_identifier, rust_type_name};
+use super::operations::{
+    error_decoder_name, inline_parameter_type_name, inline_request_body_type_name, method_tokens,
+    response_decode,
+};
+use super::{literal, rust_identifier};
 
 mod multipart;
+mod types;
 use multipart::binary_fields;
+use types::parameter_type;
 
 pub(super) struct RequestParts {
     pub(super) query: TokenStream,
@@ -246,7 +251,7 @@ fn parameter_arguments(
     let entries = operation
         .parameters
         .iter()
-        .map(|parameter| parameter_argument(parameter, spec))
+        .map(|parameter| parameter_argument(operation, parameter, spec))
         .collect::<Vec<_>>();
     let arguments = entries.iter().map(|entry| entry.0.clone()).collect();
     let path_arguments = entries
@@ -260,11 +265,12 @@ fn parameter_arguments(
 }
 
 fn parameter_argument(
+    operation: &Operation,
     parameter: &crate::Parameter,
     spec: &ApiIr,
 ) -> (TokenStream, TokenStream, Vec<TokenStream>, Vec<TokenStream>) {
     let name = format_ident!("{}", rust_identifier(&parameter.name));
-    let ty = parameter_type(&parameter.schema, spec);
+    let ty = parameter_type_for(operation, parameter, spec);
     let name_literal = literal(&parameter.name);
     let style = style_literal(parameter.serialization.style);
     let explode = parameter.serialization.explode;
@@ -302,6 +308,16 @@ fn parameter_argument(
         &mut headers,
     );
     (quote! { #name: #ty }, quote! {}, query, headers)
+}
+
+fn parameter_type_for(
+    operation: &Operation,
+    parameter: &crate::Parameter,
+    spec: &ApiIr,
+) -> TokenStream {
+    let inline = matches!(parameter.schema, Schema::TypedEnum { .. })
+        .then(|| inline_parameter_type_name(operation, parameter));
+    parameter_type(&parameter.schema, spec, inline.as_ref())
 }
 
 struct ParameterSetup<'a> {
@@ -435,7 +451,11 @@ fn request_body_argument(
     let body_type = request_body
         .schema
         .as_ref()
-        .map(|schema| parameter_type(schema, spec))
+        .map(|schema| {
+            let inline = matches!(schema, Schema::TypedEnum { .. })
+                .then(|| inline_request_body_type_name(operation));
+            parameter_type(schema, spec, inline.as_ref())
+        })
         .unwrap_or_else(|| quote! { serde_json::Value });
     let name = format_ident!("request_body");
     let content_type = literal(&request_body.content_type);
@@ -482,34 +502,5 @@ fn optional_body_bytes(content_type: &str) -> TokenStream {
         quote! { value }
     } else {
         quote! { serde_json::to_vec(&value).map_err(|error| SdkError::Serialization(error.to_string()))? }
-    }
-}
-
-fn parameter_type(schema: &Schema, spec: &ApiIr) -> TokenStream {
-    match schema {
-        Schema::String {
-            format: Some(format),
-        } if format == "binary" => quote! { Vec<u8> },
-        Schema::String { .. } => quote! { String },
-        Schema::Integer { .. } => quote! { i64 },
-        Schema::Number { .. } => quote! { f64 },
-        Schema::Boolean => quote! { bool },
-        Schema::TypedEnum { base, .. } => parameter_type(base, spec),
-        Schema::Reference(name) => {
-            if spec.schemas.contains_key(name) {
-                let name = format_ident!("{}", rust_type_name(name));
-                quote! { #name }
-            } else {
-                quote! { serde_json::Value }
-            }
-        }
-        Schema::Array(item) => {
-            let item = parameter_type(item, spec);
-            quote! { Vec<#item> }
-        }
-        _ => {
-            let _ = spec;
-            quote! { serde_json::Value }
-        }
     }
 }

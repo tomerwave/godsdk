@@ -1,4 +1,5 @@
 use crate::code_writer::CodeWriter;
+use crate::rust_ast::{inline_parameter_type_name, inline_request_body_type_name};
 use crate::{ApiIr, Operation, ParameterLocation, Schema, rust_identifier};
 
 use super::{
@@ -191,7 +192,7 @@ pub(super) fn render_native_operation(operation: &Operation, crate_name: &str) -
 fn native_inputs(operation: &Operation, crate_name: &str) -> (String, String, String) {
     let inputs = ordered_parameters(operation)
         .iter()
-        .map(|parameter| native_parameter(parameter, crate_name))
+        .map(|parameter| native_parameter(operation, parameter, crate_name))
         .collect::<Vec<_>>();
     let mut parameters = inputs
         .iter()
@@ -234,12 +235,19 @@ fn native_inputs(operation: &Operation, crate_name: &str) -> (String, String, St
     )
 }
 
-fn native_parameter(parameter: &crate::Parameter, crate_name: &str) -> (String, String, String) {
+fn native_parameter(
+    operation: &Operation,
+    parameter: &crate::Parameter,
+    crate_name: &str,
+) -> (String, String, String) {
     let name = rust_identifier(&parameter.name);
     if parameter.location == ParameterLocation::Path {
         return (format!(", {name}: String"), String::new(), name);
     }
-    let ty = native_rust_schema_type(&parameter.schema, crate_name);
+    let ty = native_inline_type(&parameter.schema, crate_name, || {
+        inline_parameter_type_name(operation, parameter)
+    })
+    .unwrap_or_else(|| native_rust_schema_type(&parameter.schema, crate_name));
     let signature = if parameter.required {
         format!(", {name}: serde_json::Value")
     } else {
@@ -260,7 +268,10 @@ fn native_parameter(parameter: &crate::Parameter, crate_name: &str) -> (String, 
 fn native_body_input(operation: &Operation, crate_name: &str) -> Option<(String, String)> {
     let body = operation.request_body_details.as_ref()?;
     let schema = body.schema.as_ref()?;
-    let ty = native_rust_schema_type(schema, crate_name);
+    let ty = native_inline_type(schema, crate_name, || {
+        inline_request_body_type_name(operation)
+    })
+    .unwrap_or_else(|| native_rust_schema_type(schema, crate_name));
     if body.required {
         Some((
             format!(
@@ -342,5 +353,17 @@ fn native_rust_schema_type(schema: &Schema, crate_name: &str) -> String {
         Schema::Boolean => "bool".to_string(),
         Schema::Array(item) => format!("Vec<{}>", native_rust_schema_type(item, crate_name)),
         _ => "serde_json::Value".to_string(),
+    }
+}
+
+fn native_inline_type<F>(schema: &Schema, crate_name: &str, name: F) -> Option<String>
+where
+    F: FnOnce() -> syn::Ident,
+{
+    if matches!(schema, Schema::TypedEnum { .. } | Schema::Const { .. }) {
+        let name = name().to_string();
+        Some([crate_name, "::", &name].concat())
+    } else {
+        None
     }
 }

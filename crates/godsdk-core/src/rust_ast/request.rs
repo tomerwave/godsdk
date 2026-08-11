@@ -10,8 +10,11 @@ use super::operations::{
 use super::{literal, rust_identifier};
 
 mod multipart;
+#[path = "request_body.rs"]
+mod request_body;
 mod types;
 use multipart::binary_fields;
+use request_body::{optional_body_bytes, request_body_expression, required_body_bytes};
 use types::parameter_type;
 
 pub(super) struct RequestParts {
@@ -182,7 +185,10 @@ fn request_destructuring(
         .filter(|body| {
             matches!(
                 body.content_type.as_str(),
-                "application/json" | "multipart/form-data" | "application/octet-stream"
+                "application/json"
+                    | "application/x-www-form-urlencoded"
+                    | "multipart/form-data"
+                    | "application/octet-stream"
             )
         })
         .map(|_| vec![format_ident!("request_body")])
@@ -493,33 +499,4 @@ fn request_body_type(
             parameter_type(schema, spec, inline.as_ref())
         })
         .unwrap_or_else(|| quote! { serde_json::Value })
-}
-
-fn request_body_expression(
-    content_type: &str,
-    binary_fields: &[syn::LitStr],
-    bytes: TokenStream,
-) -> TokenStream {
-    let content_type_literal = literal(content_type);
-    if content_type == "multipart/form-data" {
-        quote! { RequestBody::Multipart { bytes, binary_fields: &[#(#binary_fields),*] } }
-    } else {
-        quote! { RequestBody::Bytes { content_type: #content_type_literal, bytes: #bytes } }
-    }
-}
-
-fn required_body_bytes(content_type: &str, name: &syn::Ident) -> TokenStream {
-    if content_type == "application/octet-stream" {
-        quote! { #name }
-    } else {
-        quote! { serde_json::to_vec(&#name).map_err(|error| SdkError::Serialization(error.to_string()))? }
-    }
-}
-
-fn optional_body_bytes(content_type: &str) -> TokenStream {
-    if content_type == "application/octet-stream" {
-        quote! { value }
-    } else {
-        quote! { serde_json::to_vec(&value).map_err(|error| SdkError::Serialization(error.to_string()))? }
-    }
 }

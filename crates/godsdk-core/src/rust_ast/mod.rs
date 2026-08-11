@@ -65,8 +65,8 @@ pub(super) fn snake_case(value: &str) -> String {
 }
 
 pub(super) fn rust_type_name(value: &str) -> String {
-    value
-        .split(['/', '#', '-', '_'])
+    let mut result: String = value
+        .split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|part| !part.is_empty())
         .map(|part| {
             let mut chars = part.chars();
@@ -74,7 +74,18 @@ pub(super) fn rust_type_name(value: &str) -> String {
                 first.to_uppercase().collect::<String>() + chars.as_str()
             })
         })
-        .collect()
+        .collect();
+    if result
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_ascii_digit())
+    {
+        result.insert(0, '_');
+    }
+    if result.is_empty() {
+        result.push_str("GeneratedType");
+    }
+    result
 }
 
 pub(crate) fn rust_identifier(value: &str) -> String {
@@ -101,5 +112,64 @@ pub(crate) fn rust_identifier(value: &str) -> String {
     {
         result.insert(0, '_');
     }
+    if is_rust_keyword(&result) {
+        result.insert_str(0, "r#");
+    }
     result
+}
+
+fn is_rust_keyword(value: &str) -> bool {
+    matches!(
+        value,
+        "as" | "break"
+            | "const"
+            | "continue"
+            | "crate"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "pub"
+            | "ref"
+            | "return"
+            | "self"
+            | "Self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "type"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+            | "async"
+            | "await"
+            | "dyn"
+            | "abstract"
+            | "become"
+            | "box"
+            | "do"
+            | "final"
+            | "macro"
+            | "override"
+            | "priv"
+            | "typeof"
+            | "unsized"
+            | "virtual"
+            | "yield"
+            | "try"
+    )
 }

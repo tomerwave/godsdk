@@ -34,7 +34,7 @@ fn rust_file(path: &str, tokens: TokenStream) -> (String, String) {
 
 fn model_tokens(name: &str, schema: &Schema, spec: &ApiIr) -> TokenStream {
     let ident = format_ident!("{}", rust_type_name(name));
-    match schema {
+    let body = match schema {
         Schema::Enum(values) => render_enum(&ident, values),
         Schema::OneOf(variants) | Schema::AnyOf(variants) => render_union(&ident, variants),
         Schema::Object { .. } | Schema::AllOf(_) => render_object(&ident, schema, spec),
@@ -46,7 +46,8 @@ fn model_tokens(name: &str, schema: &Schema, spec: &ApiIr) -> TokenStream {
             let ty = schema_tokens(other);
             quote! { pub type #ident = #ty; }
         }
-    }
+    };
+    quote! { use std::collections::BTreeMap; use crate::*; #body }
 }
 
 fn render_enum(ident: &syn::Ident, values: &[String]) -> TokenStream {
@@ -100,6 +101,7 @@ fn render_object(ident: &syn::Ident, schema: &Schema, spec: &ApiIr) -> TokenStre
 
 fn schema_tokens(schema: &Schema) -> TokenStream {
     match schema {
+        Schema::Any => quote! { serde_json::Value },
         Schema::String { .. } => quote! { String },
         Schema::Integer { .. } => quote! { i64 },
         Schema::Number { .. } => quote! { f64 },

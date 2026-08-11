@@ -55,6 +55,21 @@ fn generates_a_compiling_rust_repository_skeleton() {
 }
 
 #[test]
+fn generates_rust_raw_identifiers_for_reserved_properties() {
+    let (_output, request) = generated_fixture("reserved-property-3.1.yaml");
+
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+
+    let model = std::fs::read_to_string(
+        request
+            .output_path()
+            .join("sdk/rust/src/models/resource.rs"),
+    )
+    .unwrap_or_else(|error| panic!("generated model is readable: {error}"));
+    assert!(model.contains("pub r#type: String"));
+}
+
+#[test]
 fn generated_repository_includes_godlint_policy() {
     let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
     let request =

@@ -453,8 +453,12 @@ fn parameter_type(schema: &Schema, spec: &ApiIr) -> TokenStream {
         Schema::Number { .. } => quote! { f64 },
         Schema::Boolean => quote! { bool },
         Schema::Reference(name) => {
-            let name = format_ident!("{}", rust_type_name(name));
-            quote! { #name }
+            if spec.schemas.contains_key(name) {
+                let name = format_ident!("{}", rust_type_name(name));
+                quote! { #name }
+            } else {
+                quote! { serde_json::Value }
+            }
         }
         Schema::Array(item) => {
             let item = parameter_type(item, spec);

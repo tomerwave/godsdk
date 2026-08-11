@@ -10,7 +10,7 @@ pub(super) fn render_models(spec: &ApiIr) -> String {
         String::new(),
         "from enum import Enum".to_string(),
         "from typing import TypeAlias".to_string(),
-        "from pydantic import BaseModel, ConfigDict".to_string(),
+        "from pydantic import BaseModel, ConfigDict, Field".to_string(),
         String::new(),
         "JsonValue: TypeAlias = None | bool | int | float | str | list[\"JsonValue\"] | dict[str, \"JsonValue\"]".to_string(),
         String::new(),
@@ -70,17 +70,28 @@ fn model_lines(name: &str, schema: &Schema, spec: &ApiIr) -> Vec<String> {
     }
     let mut lines = vec![
         ["class ", name, "(BaseModel):"].concat(),
-        "    model_config = ConfigDict(extra=\"forbid\")".to_string(),
+        "    model_config = ConfigDict(extra=\"forbid\", populate_by_name=True)".to_string(),
     ];
     lines.extend(object_fields(schema, spec).into_iter().map(
         |(property, property_schema, required)| {
             let annotation = python_type(&property_schema);
+            let identifier = python_identifier(&property);
+            let field = if identifier != property {
+                format!("Field(alias={property:?})")
+            } else {
+                String::new()
+            };
             if required {
                 [
                     "    ".to_string(),
-                    python_identifier(&property),
+                    identifier,
                     ": ".to_string(),
                     annotation,
+                    if field.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" = {field}")
+                    },
                 ]
                 .concat()
             } else {
@@ -89,7 +100,11 @@ fn model_lines(name: &str, schema: &Schema, spec: &ApiIr) -> Vec<String> {
                     python_identifier(&property),
                     ": ".to_string(),
                     annotation,
-                    " | None = None".to_string(),
+                    if field.is_empty() {
+                        " | None = None".to_string()
+                    } else {
+                        format!(" | None = {field}")
+                    },
                 ]
                 .concat()
             }
@@ -124,6 +139,7 @@ fn object_fields(schema: &Schema, spec: &ApiIr) -> Vec<(String, Schema, bool)> {
 
 fn python_type(schema: &Schema) -> String {
     match schema {
+        Schema::Any => "JsonValue".to_string(),
         Schema::String { .. } => "str".to_string(),
         Schema::Integer { .. } => "int".to_string(),
         Schema::Number { .. } => "float".to_string(),
@@ -144,7 +160,7 @@ fn python_type(schema: &Schema) -> String {
 }
 
 fn enum_identifier(value: &str) -> String {
-    type_identifier(value).to_ascii_uppercase()
+    python_identifier(value).to_ascii_uppercase()
 }
 
 fn python_string_literal(value: &str) -> String {

@@ -28,7 +28,7 @@ pub(super) fn render(spec: &ApiIr) -> TokenStream {
         .operations
         .iter()
         .filter(|operation| has_error_responses(operation))
-        .map(render_error_contract);
+        .map(|operation| render_error_contract(operation, spec));
     let request_types = spec
         .operations
         .iter()
@@ -95,7 +95,7 @@ fn render_operation(operation: &Operation, spec: &ApiIr) -> TokenStream {
             },
         },
     );
-    let response_type = response_type(operation);
+    let response_type = response_type(operation, spec);
     let error_type = has_error_responses(operation).then(|| error_type_name(operation));
     let return_type = error_type
         .as_ref()
@@ -138,19 +138,19 @@ pub(super) fn error_decoder_name(operation: &Operation) -> proc_macro2::Ident {
     format_ident!("decode_{}_error", rust_identifier(&operation.operation_id))
 }
 
-fn render_error_contract(operation: &Operation) -> TokenStream {
+fn render_error_contract(operation: &Operation, spec: &ApiIr) -> TokenStream {
     let error_type = error_type_name(operation);
     let decoder = error_decoder_name(operation);
     let variants = operation
         .responses
         .iter()
         .filter(|response| !response.status.starts_with('2'))
-        .map(error_variant);
+        .map(|response| error_variant(response, spec));
     let arms = operation
         .responses
         .iter()
         .filter(|response| !response.status.starts_with('2'))
-        .filter_map(|response| error_decoder_arm(response, &error_type));
+        .filter_map(|response| error_decoder_arm(response, &error_type, spec));
     quote! {
         #[derive(Debug, thiserror::Error)]
         pub enum #error_type {
@@ -170,13 +170,13 @@ fn render_error_contract(operation: &Operation) -> TokenStream {
     }
 }
 
-fn error_variant(response: &crate::Response) -> TokenStream {
+fn error_variant(response: &crate::Response, spec: &ApiIr) -> TokenStream {
     let variant = status_variant(&response.status);
     let mut message = String::from("API returned HTTP ");
     message.push_str(&response.status);
     match response.schema.as_ref() {
         Some(schema) => {
-            let schema = schema_tokens(schema);
+            let schema = schema_tokens(schema, spec);
             quote! {
                 #[error(#message)]
                 #variant(#schema),
@@ -192,12 +192,13 @@ fn error_variant(response: &crate::Response) -> TokenStream {
 fn error_decoder_arm(
     response: &crate::Response,
     error_type: &proc_macro2::Ident,
+    spec: &ApiIr,
 ) -> Option<TokenStream> {
     let status = response.status.parse::<u16>().ok()?;
     let variant = status_variant(&response.status);
     let arm = match response.schema.as_ref() {
         Some(schema) => {
-            let schema = schema_tokens(schema);
+            let schema = schema_tokens(schema, spec);
             quote! {
                 #status => match serde_json::from_str::<#schema>(&response.body) {
                     Ok(value) => #error_type::#variant(value),
@@ -214,7 +215,9 @@ fn error_decoder_arm(
 }
 
 fn status_variant(status: &str) -> proc_macro2::Ident {
-    format_ident!("Status{}", rust_type_name(status))
+    let suffix = rust_type_name(status);
+    let suffix = suffix.strip_prefix('_').unwrap_or(&suffix);
+    format_ident!("Status{suffix}")
 }
 
 fn operation_security(operation: &Operation, spec: &ApiIr) -> TokenStream {
@@ -224,7 +227,7 @@ fn operation_security(operation: &Operation, spec: &ApiIr) -> TokenStream {
     let alternatives = requirements
         .iter()
         .map(|requirement| render_security_alternative(requirement, spec));
-    quote! { Some(&[#(#alternatives),*]) }
+    quote! { Some(vec![#(#alternatives),*]) }
 }
 
 fn render_security_alternative(
@@ -235,7 +238,7 @@ fn render_security_alternative(
         .schemes
         .iter()
         .map(|required| render_security_requirement(required, spec));
-    quote! { &[#(#schemes),*][..] }
+    quote! { vec![#(#schemes),*] }
 }
 
 fn render_security_requirement(
@@ -359,13 +362,13 @@ pub(super) fn method_tokens(method: HttpMethod) -> proc_macro2::Ident {
     )
 }
 
-fn response_type(operation: &Operation) -> TokenStream {
+fn response_type(operation: &Operation, spec: &ApiIr) -> TokenStream {
     operation
         .responses
         .iter()
         .find(|response| response.status.starts_with('2') && response.schema.is_some())
         .and_then(|response| response.schema.as_ref())
-        .map(schema_tokens)
+        .map(|schema| schema_tokens(schema, spec))
         .unwrap_or_else(|| quote! { String })
 }
 
@@ -378,15 +381,16 @@ fn is_string_response(operation: &Operation) -> bool {
         .is_none_or(|schema| matches!(schema, Schema::String { .. }))
 }
 
-fn schema_tokens(schema: &Schema) -> TokenStream {
+fn schema_tokens(schema: &Schema, spec: &ApiIr) -> TokenStream {
     match schema {
+        Schema::Any => quote! { serde_json::Value },
         Schema::String { .. } => quote! { String },
         Schema::Integer { .. } => quote! { i64 },
         Schema::Number { .. } => quote! { f64 },
         Schema::Boolean => quote! { bool },
         Schema::Null => quote! { () },
         Schema::Array(item) => {
-            let item = schema_tokens(item);
+            let item = schema_tokens(item, spec);
             quote! { Vec<#item> }
         }
         Schema::Object {
@@ -394,16 +398,20 @@ fn schema_tokens(schema: &Schema) -> TokenStream {
             properties,
             ..
         } if properties.is_empty() => {
-            let value = schema_tokens(value);
+            let value = schema_tokens(value, spec);
             quote! { std::collections::BTreeMap<String, #value> }
         }
         Schema::Object { .. } => quote! { serde_json::Map<String, serde_json::Value> },
         Schema::Reference(name) => {
-            let ident = format_ident!("{}", rust_type_name(name));
-            quote! { #ident }
+            if spec.schemas.contains_key(name) {
+                let ident = format_ident!("{}", rust_type_name(name));
+                quote! { #ident }
+            } else {
+                quote! { serde_json::Value }
+            }
         }
         Schema::Nullable(inner) => {
-            let inner = schema_tokens(inner);
+            let inner = schema_tokens(inner, spec);
             quote! { Option<#inner> }
         }
         Schema::Enum(_) | Schema::OneOf(_) | Schema::AnyOf(_) | Schema::AllOf(_) => {

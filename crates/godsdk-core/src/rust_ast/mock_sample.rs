@@ -43,6 +43,7 @@ fn sample_schema(schema: &Schema, spec: &ApiIr, depth: usize) -> Value {
         return Value::Null;
     }
     match schema {
+        Schema::Any => Value::Null,
         Schema::String { .. } => Value::String("example".to_string()),
         Schema::Integer { .. } => Value::from(1),
         Schema::Number { .. } => Value::from(1.0),

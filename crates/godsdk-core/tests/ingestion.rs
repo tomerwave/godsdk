@@ -31,6 +31,59 @@ fn accepts_openapi_30_and_normalizes_nullable_schema_values() {
 }
 
 #[test]
+fn accepts_yaml_null_schema_types_from_openapi_31() {
+    let spec = parse_fixture("anchor-null-schema-3.1.yaml");
+
+    assert!(matches!(
+        spec.operations
+            .iter()
+            .find(|operation| operation.operation_id == "getNullable")
+            .and_then(|operation| operation.responses[0].schema.as_ref()),
+        Some(Schema::Nullable(inner)) if matches!(inner.as_ref(), Schema::String { .. })
+    ));
+    assert!(matches!(
+        spec.operations
+            .iter()
+            .find(|operation| operation.operation_id == "createNull")
+            .and_then(|operation| operation.responses[0].schema.as_ref()),
+        Some(Schema::Null)
+    ));
+}
+
+#[test]
+fn infers_stable_operation_ids_when_openapi_omits_them() {
+    let spec = parse_fixture("missing-operation-id-3.1.yaml");
+
+    assert_eq!(
+        spec.operations
+            .iter()
+            .map(|operation| operation.operation_id.as_str())
+            .collect::<Vec<_>>(),
+        ["postUsers", "deleteUser", "getUsersUserId"]
+    );
+}
+
+#[test]
+fn preserves_untyped_json_schemas_as_explicit_any_values() {
+    let spec = parse_fixture("untyped-schema-3.1.yaml");
+
+    assert!(matches!(
+        spec.operations[0].responses[0].schema,
+        Some(Schema::Any)
+    ));
+}
+
+#[test]
+fn preserves_the_base_type_of_non_string_enums() {
+    let spec = parse_fixture("typed-enum-3.1.yaml");
+
+    assert!(matches!(
+        spec.operations[0].parameters[0].schema,
+        Schema::Integer { .. }
+    ));
+}
+
+#[test]
 fn normalizes_yaml_operations_in_stable_order() {
     let spec = parse_fixture("parameters-and-errors-3.1.yaml");
 

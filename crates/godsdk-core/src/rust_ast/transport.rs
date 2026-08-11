@@ -61,7 +61,7 @@ fn request_method() -> TokenStream {
             pub(crate) query: Vec<(String, String)>,
             pub(crate) headers: Vec<(String, String)>,
             pub(crate) body: Option<String>,
-            pub(crate) requirements: Option<&'static [&'static [AuthRequirement]]>,
+            pub(crate) requirements: Option<Vec<Vec<AuthRequirement>>>,
         }
 
         impl Client {
@@ -108,7 +108,7 @@ fn build_request() -> TokenStream {
                 let request = apply_auth(
                     self.http.request(method.clone(), url.clone()),
                     &self.auth,
-                    options.requirements,
+                    options.requirements.as_deref(),
                 )?;
                 let request = options.query.iter().fold(request, |request, (name, value)| {
                     request.query(&[(name, value)])

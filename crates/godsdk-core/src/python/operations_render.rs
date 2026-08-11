@@ -86,12 +86,22 @@ fn client_method_body(
             "            raise SdkHttpError(int(raw[\"status\"]), raw[\"body\"])\n".to_string(),
         ]);
     }
-    let error = has_error_responses(operation)
-        .then(|| format!("{}Error", type_identifier(&operation.operation_id)));
+    let error = has_error_responses(operation).then(|| {
+        [
+            type_identifier(&operation.operation_id),
+            "Error".to_string(),
+        ]
+        .concat()
+    });
     let error_handling = error.map_or_else(
         || "            raise SdkHttpError(int(raw[\"status\"]), raw[\"body\"])".to_string(),
         |error| {
-            format!("            raise {error}.from_native(int(raw[\"status\"]), raw[\"body\"])")
+            [
+                "            raise ",
+                error.as_str(),
+                ".from_native(int(raw[\"status\"]), raw[\"body\"])",
+            ]
+            .concat()
         },
     );
     CodeWriter::from_parts([
@@ -122,9 +132,16 @@ fn native_arguments(operation: &Operation) -> String {
         if parameter.location == ParameterLocation::Path {
             name
         } else if parameter.required {
-            format!("json.dumps({name})")
+            ["json.dumps(", name.as_str(), ")"].concat()
         } else {
-            format!("None if {name} is None else json.dumps({name})")
+            [
+                "None if ",
+                name.as_str(),
+                " is None else json.dumps(",
+                name.as_str(),
+                ")",
+            ]
+            .concat()
         }
     }));
     arguments.join(", ")
@@ -151,7 +168,7 @@ fn python_schema_type(schema: &Schema) -> String {
         Schema::Integer { .. } => "int".to_string(),
         Schema::Number { .. } => "float".to_string(),
         Schema::Boolean => "bool".to_string(),
-        Schema::Array(item) => format!("list[{}]", python_schema_type(item)),
+        Schema::Array(item) => ["list[", python_schema_type(item).as_str(), "]"].concat(),
         _ => "JsonValue".to_string(),
     }
 }
@@ -186,12 +203,12 @@ fn native_inputs(operation: &Operation, crate_name: &str) -> (String, String, St
         .iter()
         .map(|parameter| {
             let name = rust_identifier(&parameter.name);
-            format!("{name}: {name}")
+            [name.clone(), ": ".to_string(), name].concat()
         })
         .collect::<Vec<_>>();
     if let Some(input) = native_body_input(operation, crate_name) {
         conversions.push(input.0);
-        fields.push(format!("request_body: {}", input.1));
+        fields.push(["request_body: ".to_string(), input.1].concat());
     }
     if let Some(body) = operation.request_body_details.as_ref() {
         parameters.insert(
@@ -206,33 +223,60 @@ fn native_inputs(operation: &Operation, crate_name: &str) -> (String, String, St
     (
         parameters.concat(),
         conversions.concat(),
-        format!(
-            "{crate_name}::{}Request {{ {} }}",
+        [
+            crate_name.to_string(),
+            "::".to_string(),
             type_identifier(&operation.operation_id),
+            "Request { ".to_string(),
             fields.join(", "),
-        ),
+            " }".to_string(),
+        ]
+        .concat(),
     )
 }
 
 fn native_parameter(parameter: &crate::Parameter, crate_name: &str) -> (String, String, String) {
     let name = rust_identifier(&parameter.name);
     if parameter.location == ParameterLocation::Path {
-        return (format!(", {name}: String"), String::new(), name);
+        return (
+            [", ".to_string(), name.clone(), ": String".to_string()].concat(),
+            String::new(),
+            name,
+        );
     }
     let ty = native_rust_schema_type(&parameter.schema, crate_name);
     let signature = if parameter.required {
-        format!(", {name}: String")
+        [", ".to_string(), name.clone(), ": String".to_string()].concat()
     } else {
-        format!(", {name}: Option<String>")
+        [
+            ", ".to_string(),
+            name.clone(),
+            ": Option<String>".to_string(),
+        ]
+        .concat()
     };
     let conversion = if parameter.required {
-        format!(
-            "        let {name}: {ty} = serde_json::from_str(&{name}).map_err(to_python_error)?;\n"
-        )
+        [
+            "        let ",
+            name.as_str(),
+            ": ",
+            ty.as_str(),
+            " = serde_json::from_str(&",
+            name.as_str(),
+            ").map_err(to_python_error)?;\n",
+        ]
+        .concat()
     } else {
-        format!(
-            "        let {name}: Option<{ty}> = {name}.map(|value| serde_json::from_str(&value)).transpose().map_err(to_python_error)?;\n"
-        )
+        [
+            "        let ",
+            name.as_str(),
+            ": Option<",
+            ty.as_str(),
+            "> = ",
+            name.as_str(),
+            ".map(|value| serde_json::from_str(&value)).transpose().map_err(to_python_error)?;\n",
+        ]
+        .concat()
     };
     (signature, conversion, name)
 }
@@ -243,16 +287,20 @@ fn native_body_input(operation: &Operation, crate_name: &str) -> Option<(String,
     let ty = native_rust_schema_type(schema, crate_name);
     if body.required {
         Some((
-            format!(
-                "        let request_body: {ty} = serde_json::from_str(&request_body).map_err(to_python_error)?;\n"
-            ),
+            [
+                "        let request_body: ",
+                ty.as_str(),
+                " = serde_json::from_str(&request_body).map_err(to_python_error)?;\n",
+            ]
+            .concat(),
             "request_body".to_string(),
         ))
     } else {
         Some((
-            format!(
-                "        let request_body: Option<{ty}> = request_body.map(|value| serde_json::from_str(&value)).transpose().map_err(to_python_error)?;\n"
-            ),
+            [
+                "        let request_body: Option<", ty.as_str(),
+                "> = request_body.map(|value| serde_json::from_str(&value)).transpose().map_err(to_python_error)?;\n",
+            ].concat(),
             "request_body".to_string(),
         ))
     }
@@ -277,12 +325,22 @@ fn native_call_body(operation: &Operation, method: &str, arguments: &str) -> Str
 
 fn native_rust_schema_type(schema: &Schema, crate_name: &str) -> String {
     match schema {
-        Schema::Reference(name) => format!("{crate_name}::{}", type_identifier(name)),
+        Schema::Reference(name) => [
+            crate_name.to_string(),
+            "::".to_string(),
+            type_identifier(name),
+        ]
+        .concat(),
         Schema::String { .. } => "String".to_string(),
         Schema::Integer { .. } => "i64".to_string(),
         Schema::Number { .. } => "f64".to_string(),
         Schema::Boolean => "bool".to_string(),
-        Schema::Array(item) => format!("Vec<{}>", native_rust_schema_type(item, crate_name)),
+        Schema::Array(item) => [
+            "Vec<".to_string(),
+            native_rust_schema_type(item, crate_name),
+            ">".to_string(),
+        ]
+        .concat(),
         _ => "serde_json::Value".to_string(),
     }
 }

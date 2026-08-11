@@ -30,9 +30,14 @@ pub(crate) fn python_error_contract_lines(
     subclasses: &[String],
 ) -> Vec<String> {
     let mut lines = vec![
-        format!("class {name}(SdkHttpError):"),
+        ["class ", name, "(SdkHttpError):"].concat(),
         "    @classmethod".to_string(),
-        format!("    def from_native(cls, status: int, body: JsonValue) -> {name}:"),
+        [
+            "    def from_native(cls, status: int, body: JsonValue) -> ",
+            name,
+            ":",
+        ]
+        .concat(),
     ];
     lines.extend(arms.iter().cloned());
     lines.extend([

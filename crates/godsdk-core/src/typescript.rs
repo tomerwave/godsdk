@@ -1,5 +1,7 @@
 #[path = "typescript/identifiers.rs"]
 mod identifiers;
+#[path = "typescript/native_render.rs"]
+mod native_render;
 #[path = "typescript/operations_render.rs"]
 mod operations_render;
 #[path = "typescript/schemas.rs"]
@@ -9,7 +11,8 @@ use super::code_writer::CodeWriter;
 use super::rust_ast::{mock_request_body, mock_success_body};
 use super::{ApiIr, Operation, Schema};
 use identifiers::{slug, ts_identifier};
-use operations_render::{render_native_operation, render_operation};
+use native_render::{render_native_cargo, render_native_package, render_native_rust};
+use operations_render::render_operation;
 use schemas::{
     inline_request_schema, inline_success_schema, operation_request_name, operation_response_name,
     render_schemas, render_types, schema_model_name,
@@ -433,58 +436,9 @@ fn test_parameter_argument(parameter: &crate::Parameter) -> String {
 }
 
 fn render_readme(spec: &ApiIr) -> String {
-    format!(
-        "# {} TypeScript SDK\n\nInstall dependencies, then run `npm run test:native`. The command builds the Rust-backed napi-rs addon, starts a local mock API, and verifies runtime response validation with Zod.\n",
-        spec.title
-    )
-}
-
-fn render_native_cargo(spec: &ApiIr) -> String {
-    let crate_name = rust_crate_name(spec);
-    format!(
-        "[package]\nname = \"{}-typescript-native\"\nversion = \"0.1.0\"\nedition = \"2024\"\nrust-version = \"1.97\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nnapi = {{ version = \"3.12\", features = [\"napi9\", \"tokio_rt\", \"serde-json\"] }}\nnapi-derive = \"3.6\"\nserde_json = \"1\"\n{} = {{ package = \"{}-sdk\", path = \"../../rust\" }}\n",
-        slug(&spec.title),
-        crate_name,
-        slug(&spec.title),
-    )
-}
-
-fn render_native_package() -> String {
-    "{\n  \"type\": \"commonjs\"\n}\n".to_string()
-}
-
-fn render_native_rust(spec: &ApiIr) -> String {
-    let methods = spec
-        .operations
-        .iter()
-        .map(|operation| render_native_operation(operation, &rust_crate_name(spec)))
-        .collect::<String>();
-    let error_imports = spec
-        .operations
-        .iter()
-        .filter(|operation| has_error_responses(operation))
-        .map(|operation| format!("{}Error", type_identifier(&operation.operation_id)))
-        .collect::<Vec<_>>();
-    let error_imports = if error_imports.is_empty() {
-        String::new()
-    } else {
-        format!(", {}", error_imports.join(", "))
-    };
-    let sdk_error_import = if spec
-        .operations
-        .iter()
-        .any(|operation| !has_error_responses(operation))
-    {
-        ", SdkError"
-    } else {
-        ""
-    };
-    format!(
-        "use napi::bindgen_prelude::*;\nuse napi_derive::napi;\nuse {}::{{Client as RustClient{sdk_error_import}{error_imports}}};\n\n#[napi]\npub struct NativeClient {{\n    inner: RustClient,\n}}\n\n#[napi]\nimpl NativeClient {{\n    #[napi(constructor)]\n    pub fn new(base_url: String) -> Result<Self> {{\n        let inner = RustClient::builder(base_url).build().map_err(to_napi_error)?;\n        Ok(Self {{ inner }})\n    }}\n\n{methods}}}\n\nfn to_napi_error(error: impl std::fmt::Display) -> Error {{\n    Error::from_reason(error.to_string())\n}}\n",
-        rust_crate_name(spec),
-    )
-}
-
-fn rust_crate_name(spec: &ApiIr) -> String {
-    slug(&spec.title).replace('-', "_")
+    CodeWriter::from_lines([
+        ["# ", &spec.title, " TypeScript SDK"].concat(),
+        String::new(),
+        "Install dependencies, then run `npm run test:native`. The command builds the Rust-backed napi-rs addon, starts a local mock API, and verifies runtime response validation with Zod.".to_string(),
+    ])
 }

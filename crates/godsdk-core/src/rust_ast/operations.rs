@@ -172,7 +172,8 @@ fn render_error_contract(operation: &Operation) -> TokenStream {
 
 fn error_variant(response: &crate::Response) -> TokenStream {
     let variant = status_variant(&response.status);
-    let message = format!("API returned HTTP {}", response.status);
+    let mut message = String::from("API returned HTTP ");
+    message.push_str(&response.status);
     match response.schema.as_ref() {
         Some(schema) => {
             let schema = schema_tokens(schema);
@@ -288,13 +289,42 @@ fn render_security_kind(name: &str, kind: &SecuritySchemeKind) -> TokenStream {
 }
 
 fn operation_path(operation: &Operation, path_arguments: &[TokenStream]) -> TokenStream {
-    let (path_format, has_arguments) = path_template(operation);
-    let path_literal = literal(&path_format);
-    if has_arguments {
-        quote! { let path = format!(#path_literal, #(#path_arguments),*); }
-    } else {
-        quote! { let path = #path_literal.to_string(); }
+    let pushes = path_pushes(operation.path.as_str(), path_arguments);
+    quote! {
+        let mut path = String::new();
+        #(#pushes)*
     }
+}
+
+fn path_pushes(path: &str, path_arguments: &[TokenStream]) -> Vec<TokenStream> {
+    let mut pushes = Vec::new();
+    let mut remaining = path;
+    for argument in path_arguments {
+        let Some((segment, rest)) = path_push_segment(remaining, argument) else {
+            break;
+        };
+        pushes.extend(segment);
+        remaining = rest;
+    }
+    if !remaining.is_empty() {
+        pushes.push(quote! { path.push_str(#remaining); });
+    }
+    pushes
+}
+
+fn path_push_segment<'path>(
+    remaining: &'path str,
+    argument: &TokenStream,
+) -> Option<(Vec<TokenStream>, &'path str)> {
+    let start = remaining.find('{')?;
+    let end = start + remaining[start..].find('}')? + 1;
+    let mut segment = Vec::new();
+    let prefix = &remaining[..start];
+    if !prefix.is_empty() {
+        segment.push(quote! { path.push_str(#prefix); });
+    }
+    segment.push(quote! { path.push_str(&#argument); });
+    Some((segment, &remaining[end..]))
 }
 
 pub(super) fn response_decode(
@@ -311,20 +341,6 @@ pub(super) fn response_decode(
         );
         quote! { serde_json::from_str::<#response_type>(&body).map_err(|error| #serialization) }
     }
-}
-
-fn path_template(operation: &Operation) -> (String, bool) {
-    let mut path = operation.path.clone();
-    let mut has_arguments = false;
-    for parameter in operation
-        .parameters
-        .iter()
-        .filter(|parameter| parameter.location == ParameterLocation::Path)
-    {
-        path = path.replace(&format!("{{{}}}", parameter.name), "{}");
-        has_arguments = true;
-    }
-    (path, has_arguments)
 }
 
 pub(super) fn method_tokens(method: HttpMethod) -> proc_macro2::Ident {

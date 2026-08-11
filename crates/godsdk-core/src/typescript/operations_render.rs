@@ -1,3 +1,4 @@
+use crate::code_writer::CodeWriter;
 use crate::{ApiIr, Operation, ParameterLocation, Schema, rust_identifier};
 
 use super::{
@@ -10,9 +11,24 @@ pub(super) fn render_operation(operation: &Operation, _spec: &ApiIr) -> String {
     let parameters = public_parameters(operation);
     let arguments = public_arguments(operation);
     let (return_type, success, error_handling) = public_result(operation);
-    format!(
-        "  async {method}({parameters}): Promise<{return_type}> {{\n    const result = await this.native.{method}({arguments});\n    if (!result.ok) {{\n{error_handling}    }}\n{success}  }}\n\n"
-    )
+    CodeWriter::from_parts([
+        "  async ".to_string(),
+        method.clone(),
+        "(".to_string(),
+        parameters,
+        "): Promise<".to_string(),
+        return_type,
+        "> {\n".to_string(),
+        "    const result = await this.native.".to_string(),
+        method,
+        "(".to_string(),
+        arguments,
+        ");\n    if (!result.ok) {\n".to_string(),
+        error_handling,
+        "    }\n".to_string(),
+        success,
+        "  }\n\n".to_string(),
+    ])
 }
 
 fn public_parameters(operation: &Operation) -> String {
@@ -95,9 +111,16 @@ pub(super) fn render_native_operation(operation: &Operation, crate_name: &str) -
     let (parameters, conversions, arguments) = native_inputs(operation, crate_name);
     let method = rust_identifier(&operation.operation_id);
     let body = native_call_body(operation, &method, &arguments);
-    format!(
-        "    #[napi]\n    pub async fn {method}(&self{parameters}) -> Result<serde_json::Value> {{\n{conversions}{body}\n    }}\n\n"
-    )
+    CodeWriter::from_parts([
+        "    #[napi]\n    pub async fn ".to_string(),
+        method,
+        "(&self".to_string(),
+        parameters,
+        ") -> Result<serde_json::Value> {\n".to_string(),
+        conversions,
+        body,
+        "    }\n\n".to_string(),
+    ])
 }
 
 fn native_inputs(operation: &Operation, crate_name: &str) -> (String, String, String) {
@@ -193,22 +216,52 @@ fn native_body_input(operation: &Operation, crate_name: &str) -> Option<(String,
 fn native_call_body(operation: &Operation, method: &str, arguments: &str) -> String {
     if has_error_responses(operation) {
         let error_type = format!("{}Error", type_identifier(&operation.operation_id));
-        let arms = native_error_arms(operation, &error_type);
-        format!(
-            "        match self.inner.{method}({arguments}).await {{\n            Ok(value) => Ok(serde_json::json!({{\"ok\": true, \"value\": value}})),\n            Err({error_type}::Unexpected {{ status, body }}) => Ok(serde_json::json!({{\"ok\": false, \"status\": status, \"body\": body}})),\n            Err({error_type}::Transport(error)) => Err(to_napi_error(error)),\n{arms}        }}"
-        )
+        CodeWriter::from_parts([
+            "        match self.inner.".to_string(), method.to_string(), "(".to_string(), arguments.to_string(), ").await {\n".to_string(),
+            "            Ok(value) => Ok(serde_json::json!({\"ok\": true, \"value\": value})),\n            Err(".to_string(),
+            error_type.clone(), "::Unexpected { status, body }) => Ok(serde_json::json!({\"ok\": false, \"status\": status, \"body\": body})),\n            Err(".to_string(), error_type.clone(),
+            "::Transport(error)) => Err(to_napi_error(error)),\n".to_string(), native_error_arms(operation, &error_type), "        }".to_string(),
+        ])
     } else {
-        "        match self.inner.{method}({arguments}).await {{\n            Ok(value) => Ok(serde_json::json!({{\"ok\": true, \"value\": value}})),\n            Err(SdkError::Http {{ status, body }}) => Ok(serde_json::json!({{\"ok\": false, \"status\": status, \"body\": body}})),\n            Err(error) => Err(to_napi_error(error)),\n        }}".to_string()
+        CodeWriter::from_parts([
+            "        match self.inner.".to_string(), method.to_string(), "(".to_string(), arguments.to_string(), ").await {\n".to_string(),
+            "            Ok(value) => Ok(serde_json::json!({\"ok\": true, \"value\": value})),\n            Err(SdkError::Http { status, body }) => Ok(serde_json::json!({\"ok\": false, \"status\": status, \"body\": body})),\n            Err(error) => Err(to_napi_error(error)),\n        }".to_string(),
+        ])
     }
 }
 
 fn native_error_arms(operation: &Operation, error_type: &str) -> String {
-    operation.responses.iter().filter(|response| !response.status.starts_with('2')).filter_map(|response| {
-        let status = response.status.parse::<u16>().ok()?;
-        let variant = format!("Status{status}");
-        let (pattern, body) = response.schema.as_ref().map_or_else(|| (format!("{error_type}::{variant}"), "serde_json::Value::Null".to_string()), |_| (format!("{error_type}::{variant}(value)"), "value".to_string()));
-        Some(format!("            Err({pattern}) => Ok(serde_json::json!({{\"ok\": false, \"status\": {status}, \"body\": {body}}})),\n"))
-    }).collect()
+    let mut writer = CodeWriter::default();
+    for response in operation
+        .responses
+        .iter()
+        .filter(|response| !response.status.starts_with('2'))
+    {
+        if let Some(arm) = native_error_arm(response, error_type) {
+            writer.push(&arm);
+        }
+    }
+    writer.finish()
+}
+
+fn native_error_arm(response: &crate::Response, error_type: &str) -> Option<String> {
+    let status = response.status.parse::<u16>().ok()?.to_string();
+    let body = if response.schema.is_some() {
+        [
+            "(value)) => Ok(serde_json::json!({\"ok\": false, \"status\": ",
+            &status,
+            ", \"body\": value})),\n",
+        ]
+        .concat()
+    } else {
+        [
+            ") => Ok(serde_json::json!({\"ok\": false, \"status\": ",
+            &status,
+            ", \"body\": serde_json::Value::Null})),\n",
+        ]
+        .concat()
+    };
+    Some(["            Err(", error_type, "::Status", &status, &body].concat())
 }
 
 fn native_rust_schema_type(schema: &Schema, crate_name: &str) -> String {

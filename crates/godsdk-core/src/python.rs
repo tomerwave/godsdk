@@ -37,13 +37,7 @@ pub(crate) fn render_python_files(spec: &ApiIr) -> Vec<(String, String)> {
             "sdk/python/tests/test_models.py".to_string(),
             model_test(spec, &package),
         ),
-        (
-            "sdk/python/README.md".to_string(),
-            format!(
-                "# {} Python SDK\n\nBuild with `maturin develop`.\n",
-                spec.title
-            ),
-        ),
+        ("sdk/python/README.md".to_string(), python_readme(spec)),
     ]
 }
 
@@ -209,24 +203,41 @@ fn client(spec: &ApiIr) -> String {
 }
 
 fn native_cargo(spec: &ApiIr) -> String {
-    format!(
-        "[package]\nname = \"{}_python_native\"\nversion = \"0.1.0\"\nedition = \"2024\"\nrust-version = \"1.97\"\n\n[lib]\nname = \"_native\"\ncrate-type = [\"cdylib\"]\n\n[dependencies]\npyo3 = {{ version = \"0.24\", features = [\"abi3-py38\", \"extension-module\"] }}\nserde_json = \"1\"\ntokio = {{ version = \"1\", features = [\"rt\", \"time\"] }}\n{}_sdk = {{ package = \"{}-sdk\", path = \"../../rust\" }}\n",
-        slug(&spec.title),
-        slug(&spec.title).replace('-', "_"),
-        slug(&spec.title),
-    )
+    let package = slug(&spec.title);
+    let crate_name = package.replace('-', "_");
+    CodeWriter::from_lines([
+        "[package]".to_string(),
+        ["name = \"", &package, "_python_native\""].concat(),
+        "version = \"0.1.0\"".to_string(),
+        "edition = \"2024\"".to_string(),
+        "rust-version = \"1.97\"".to_string(),
+        String::new(),
+        "[lib]".to_string(),
+        "name = \"_native\"".to_string(),
+        "crate-type = [\"cdylib\"]".to_string(),
+        String::new(),
+        "[dependencies]".to_string(),
+        "pyo3 = { version = \"0.24\", features = [\"abi3-py38\", \"extension-module\"] }"
+            .to_string(),
+        "serde_json = \"1\"".to_string(),
+        "tokio = { version = \"1\", features = [\"rt\", \"time\"] }".to_string(),
+        [
+            crate_name,
+            "_sdk = { package = \"".to_string(),
+            package,
+            "-sdk\", path = \"../../rust\" }".to_string(),
+        ]
+        .concat(),
+    ])
 }
 
 fn native_rust(spec: &ApiIr) -> String {
+    let crate_name = package_name(spec);
+    let rust_crate_name = [crate_name.as_str(), "_sdk"].concat();
     let methods = spec
         .operations
         .iter()
-        .map(|operation| {
-            native_method(
-                operation,
-                &format!("{}_sdk", slug(&spec.title).replace('-', "_")),
-            )
-        })
+        .map(|operation| native_method(operation, &rust_crate_name))
         .collect::<String>();
     let helpers = spec
         .operations
@@ -239,24 +250,73 @@ fn native_rust(spec: &ApiIr) -> String {
         .filter(|operation| has_error_responses(operation))
         .map(|operation| format!("{}Error", type_identifier(&operation.operation_id)))
         .collect::<Vec<_>>();
-    let error_imports = if error_imports.is_empty() {
-        String::new()
-    } else {
-        format!(", {}", error_imports.join(", "))
-    };
-    let sdk_error_import = if spec
+    let imports = native_imports(spec, &crate_name, &error_imports);
+    CodeWriter::from_parts([native_header(&imports), methods, native_footer(&helpers)])
+}
+
+fn native_imports(spec: &ApiIr, crate_name: &str, errors: &[String]) -> String {
+    let mut imports = String::from("use ");
+    imports.push_str(crate_name);
+    imports.push_str("_sdk::{Client as RustClient");
+    if spec
         .operations
         .iter()
         .any(|operation| !has_error_responses(operation))
     {
-        ", SdkError"
-    } else {
-        ""
-    };
-    format!(
-        "use pyo3::prelude::*;\nuse {}_sdk::{{Client as RustClient{sdk_error_import}{error_imports}}};\n\n#[pyclass]\nstruct NativeClient {{\n    inner: RustClient,\n}}\n\n#[pymethods]\nimpl NativeClient {{\n    #[new]\n    fn new(base_url: String) -> PyResult<Self> {{\n        let inner = RustClient::builder(base_url).build().map_err(to_python_error)?;\n        Ok(Self {{ inner }})\n    }}\n{methods}}}\n\nfn encode_success_value(value: serde_json::Value) -> PyResult<String> {{\n    serde_json::to_string(&serde_json::json!({{\"ok\": true, \"value\": value}})).map_err(to_python_error)\n}}\n\nfn encode_http_error(status: u16, body: serde_json::Value) -> PyResult<String> {{\n    serde_json::to_string(&serde_json::json!({{\"ok\": false, \"status\": status, \"body\": body}})).map_err(to_python_error)\n}}\n\n{helpers}#[pymodule]\nfn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {{\n    m.add_class::<NativeClient>()?;\n    Ok(())\n}}\n\nfn to_python_error(error: impl std::fmt::Display) -> PyErr {{\n    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string())\n}}\n",
-        slug(&spec.title).replace('-', "_"),
-    )
+        imports.push_str(", SdkError");
+    }
+    if !errors.is_empty() {
+        imports.push_str(", ");
+        imports.push_str(&errors.join(", "));
+    }
+    imports.push_str("};");
+    imports
+}
+
+fn native_header(imports: &str) -> String {
+    CodeWriter::from_lines([
+        "use pyo3::prelude::*;".to_string(),
+        imports.to_string(),
+        String::new(),
+        "#[pyclass]".to_string(),
+        "struct NativeClient {".to_string(),
+        "    inner: RustClient,".to_string(),
+        "}".to_string(),
+        String::new(),
+        "#[pymethods]".to_string(),
+        "impl NativeClient {".to_string(),
+        "    #[new]".to_string(),
+        "    fn new(base_url: String) -> PyResult<Self> {".to_string(),
+        "        let inner = RustClient::builder(base_url).build().map_err(to_python_error)?;"
+            .to_string(),
+        "        Ok(Self { inner })".to_string(),
+        "    }".to_string(),
+    ])
+}
+
+fn native_footer(helpers: &str) -> String {
+    CodeWriter::from_lines([
+        "}".to_string(),
+        String::new(),
+        "fn encode_success_value(value: serde_json::Value) -> PyResult<String> {".to_string(),
+        "    serde_json::to_string(&serde_json::json!({\"ok\": true, \"value\": value})).map_err(to_python_error)".to_string(),
+        "}".to_string(),
+        String::new(),
+        "fn encode_http_error(status: u16, body: serde_json::Value) -> PyResult<String> {".to_string(),
+        "    serde_json::to_string(&serde_json::json!({\"ok\": false, \"status\": status, \"body\": body})).map_err(to_python_error)".to_string(),
+        "}".to_string(),
+        String::new(),
+        helpers.to_string(),
+        "#[pymodule]".to_string(),
+        "fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {".to_string(),
+        "    m.add_class::<NativeClient>()?;".to_string(),
+        "    Ok(())".to_string(),
+        "}".to_string(),
+        String::new(),
+        "fn to_python_error(error: impl std::fmt::Display) -> PyErr {".to_string(),
+        "    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string())".to_string(),
+        "}".to_string(),
+    ])
 }
 
 fn native_result_helper(operation: &Operation) -> String {
@@ -265,22 +325,55 @@ fn native_result_helper(operation: &Operation) -> String {
     }
     let method = rust_identifier(&operation.operation_id);
     let error_type = format!("{}Error", type_identifier(&operation.operation_id));
-    let arms = operation
+    let arms = native_result_arms(operation, &error_type);
+    CodeWriter::from_parts([
+        "fn encode_".to_string(),
+        method,
+        "_error(error: ".to_string(),
+        error_type.clone(),
+        ") -> PyResult<String> {\n    match error {\n        ".to_string(),
+        error_type.clone(),
+        "::Unexpected { status, body } => encode_http_error(status, serde_json::Value::String(body)),\n        ".to_string(),
+        error_type,
+        "::Transport(error) => Err(to_python_error(error)),\n".to_string(),
+        arms,
+        "    }\n}\n\n".to_string(),
+    ])
+}
+
+fn native_result_arms(operation: &Operation, error_type: &str) -> String {
+    let mut writer = CodeWriter::default();
+    for response in operation
         .responses
         .iter()
         .filter(|response| !response.status.starts_with('2'))
-        .filter_map(|response| {
-            let status = response.status.parse::<u16>().ok()?;
-            let variant = format!("Status{status}");
-            Some(response.schema.as_ref().map_or_else(
-                || format!("        {error_type}::{variant} => encode_http_error({status}, serde_json::Value::Null),\n"),
-                |_| format!("        {error_type}::{variant}(value) => encode_http_error({status}, serde_json::to_value(value).map_err(to_python_error)?),\n"),
-            ))
-        })
-        .collect::<String>();
-    format!(
-        "fn encode_{method}_error(error: {error_type}) -> PyResult<String> {{\n    match error {{\n        {error_type}::Unexpected {{ status, body }} => encode_http_error(status, serde_json::Value::String(body)),\n        {error_type}::Transport(error) => Err(to_python_error(error)),\n{arms}    }}\n}}\n\n"
-    )
+    {
+        if let Some(arm) = native_result_arm(response, error_type) {
+            writer.push(&arm);
+        }
+    }
+    writer.finish()
+}
+
+fn native_result_arm(response: &crate::Response, error_type: &str) -> Option<String> {
+    let status = response.status.parse::<u16>().ok()?;
+    let status = status.to_string();
+    let body = if response.schema.is_some() {
+        [
+            "(value) => encode_http_error(",
+            &status,
+            ", serde_json::to_value(value).map_err(to_python_error)?),\n",
+        ]
+        .concat()
+    } else {
+        [
+            " => encode_http_error(",
+            &status,
+            ", serde_json::Value::Null),\n",
+        ]
+        .concat()
+    };
+    Some(["        ", error_type, "::Status", &status, &body].concat())
 }
 
 fn model_test(spec: &ApiIr, package: &str) -> String {
@@ -290,9 +383,25 @@ fn model_test(spec: &ApiIr, package: &str) -> String {
         .next()
         .cloned()
         .unwrap_or_else(|| "BaseModel".to_string());
-    format!(
-        "from {package}.models import {name}\n\ndef test_models_reject_unknown_fields() -> None:\n    try:\n        {name}(unexpected=\"value\")\n    except Exception as error:\n        assert \"unexpected\" in str(error).lower()\n        return\n    raise AssertionError(\"generated model accepted an unknown field\")\n"
-    )
+    CodeWriter::from_lines([
+        ["from ", package, ".models import ", &name].concat(),
+        String::new(),
+        "def test_models_reject_unknown_fields() -> None:".to_string(),
+        "    try:".to_string(),
+        ["        ", &name, "(unexpected=\"value\")"].concat(),
+        "    except Exception as error:".to_string(),
+        "        assert \"unexpected\" in str(error).lower()".to_string(),
+        "        return".to_string(),
+        "    raise AssertionError(\"generated model accepted an unknown field\")".to_string(),
+    ])
+}
+
+fn python_readme(spec: &ApiIr) -> String {
+    CodeWriter::from_lines([
+        ["# ", &spec.title, " Python SDK"].concat(),
+        String::new(),
+        "Build with `maturin develop`.".to_string(),
+    ])
 }
 
 fn schema_model_name(schema: &Schema) -> Option<String> {

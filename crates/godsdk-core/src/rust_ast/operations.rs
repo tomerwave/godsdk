@@ -36,7 +36,7 @@ pub(super) fn render(spec: &ApiIr) -> TokenStream {
     quote! {
         use reqwest::Method;
 
-        use crate::client::{#auth_import #response_import Client, RequestOptions, SdkError};
+        use crate::client::{#auth_import #response_import Client, RequestBody, RequestOptions, SdkError};
         use crate::models::*;
 
         #(#request_types)*
@@ -164,7 +164,7 @@ fn render_error_contract(operation: &Operation, spec: &ApiIr) -> TokenStream {
         fn #decoder(response: HttpResponse) -> #error_type {
             match response.status {
                 #(#arms)*
-                status => #error_type::Unexpected { status, body: response.body },
+                status => #error_type::Unexpected { status, body: String::from_utf8_lossy(&response.body).into_owned() },
             }
         }
     }
@@ -200,11 +200,11 @@ fn error_decoder_arm(
         Some(schema) => {
             let schema = schema_tokens(schema, spec);
             quote! {
-                #status => match serde_json::from_str::<#schema>(&response.body) {
+                #status => match serde_json::from_slice::<#schema>(&response.body) {
                     Ok(value) => #error_type::#variant(value),
                     Err(_) => #error_type::Unexpected {
                         status: response.status,
-                        body: response.body,
+                        body: String::from_utf8_lossy(&response.body).into_owned(),
                     },
                 },
             }
@@ -335,15 +335,27 @@ pub(super) fn response_decode(
     response_type: &TokenStream,
     error_type: Option<&proc_macro2::Ident>,
 ) -> TokenStream {
+    let serialization = error_type.map_or_else(
+        || quote! { SdkError::Serialization(error.to_string()) },
+        |error_type| quote! { #error_type::Transport(SdkError::Serialization(error.to_string())) },
+    );
     if is_string_response(operation) {
-        quote! { Ok(body) }
+        if is_binary_response(operation) {
+            return quote! { Ok(body) };
+        }
+        quote! { Ok(String::from_utf8(body).map_err(|error| #serialization)? ) }
     } else {
-        let serialization = error_type.map_or_else(
-            || quote! { SdkError::Serialization(error.to_string()) },
-            |error_type| quote! { #error_type::Transport(SdkError::Serialization(error.to_string())) },
-        );
-        quote! { serde_json::from_str::<#response_type>(&body).map_err(|error| #serialization) }
+        quote! { serde_json::from_slice::<#response_type>(&body).map_err(|error| #serialization) }
     }
+}
+
+fn is_binary_response(operation: &Operation) -> bool {
+    operation
+        .responses
+        .iter()
+        .find(|response| response.status.starts_with('2') && response.schema.is_some())
+        .and_then(|response| response.schema.as_ref())
+        .is_some_and(|schema| matches!(schema, Schema::String { format: Some(format) } if format == "binary"))
 }
 
 pub(super) fn method_tokens(method: HttpMethod) -> proc_macro2::Ident {
@@ -384,10 +396,14 @@ fn is_string_response(operation: &Operation) -> bool {
 fn schema_tokens(schema: &Schema, spec: &ApiIr) -> TokenStream {
     match schema {
         Schema::Any => quote! { serde_json::Value },
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => quote! { Vec<u8> },
         Schema::String { .. } => quote! { String },
         Schema::Integer { .. } => quote! { i64 },
         Schema::Number { .. } => quote! { f64 },
         Schema::Boolean => quote! { bool },
+        Schema::TypedEnum { base, .. } => schema_tokens(base, spec),
         Schema::Null => quote! { () },
         Schema::Array(item) => {
             let item = schema_tokens(item, spec);

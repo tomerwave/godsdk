@@ -131,6 +131,7 @@ fn client_method_body(
             .concat()
         },
     );
+    let response = python_response_expression(operation, return_type);
     CodeWriter::from_parts([
         "        raw = cast(dict[str, JsonValue], json.loads(self._native.".to_string(),
         method.to_string(),
@@ -140,9 +141,30 @@ fn client_method_body(
         "        if raw[\"ok\"] is not True:\n".to_string(),
         error_handling,
         "\n        return ".to_string(),
-        return_type.to_string(),
-        ".model_validate(raw[\"value\"])\n".to_string(),
+        response,
+        "\n".to_string(),
     ])
+}
+
+#[allow(clippy::useless_format)]
+fn python_response_expression(operation: &Operation, return_type: &str) -> String {
+    let schema = operation
+        .responses
+        .iter()
+        .find(|response| response.status.starts_with('2'))
+        .and_then(|response| response.schema.as_ref());
+    match schema {
+        Some(Schema::String {
+            format: Some(format),
+        }) if format == "binary" => format!("bytes(raw[\"value\"])"),
+        Some(Schema::String { .. })
+        | Some(Schema::Integer { .. })
+        | Some(Schema::Number { .. })
+        | Some(Schema::Boolean)
+        | Some(Schema::TypedEnum { .. }) => "raw[\"value\"]".to_string(),
+        Some(Schema::Enum(_)) => format!("{return_type}(raw[\"value\"])"),
+        _ => format!("{return_type}.model_validate(raw[\"value\"])"),
+    }
 }
 
 fn native_arguments(operation: &Operation) -> String {
@@ -228,6 +250,9 @@ fn ordered_parameters(operation: &Operation) -> Vec<&crate::Parameter> {
 fn python_schema_type(schema: &Schema) -> String {
     match schema {
         Schema::Reference(name) => type_identifier(name),
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => "bytes".to_string(),
         Schema::String { .. } => "str".to_string(),
         Schema::Integer { .. } => "int".to_string(),
         Schema::Number { .. } => "float".to_string(),
@@ -241,6 +266,12 @@ fn body_json_expression(body: &crate::RequestBody, variable: &str) -> String {
     let Some(schema) = body.schema.as_ref() else {
         return format!("json.dumps({variable})");
     };
+    if body.content_type == "multipart/form-data" || body.content_type == "application/octet-stream"
+    {
+        return format!(
+            "json.dumps({variable}.model_dump(mode=\"python\") if hasattr({variable}, \"model_dump\") else {variable}, default=lambda value: list(value) if isinstance(value, bytes) else value)"
+        );
+    }
     if python_schema_type(schema) == "JsonValue" {
         format!("json.dumps({variable})")
     } else if schema_requires_alias(schema) {
@@ -455,6 +486,9 @@ fn native_rust_schema_type(schema: &Schema, crate_name: &str) -> String {
             type_identifier(name),
         ]
         .concat(),
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => "Vec<u8>".to_string(),
         Schema::String { .. } => "String".to_string(),
         Schema::Integer { .. } => "i64".to_string(),
         Schema::Number { .. } => "f64".to_string(),

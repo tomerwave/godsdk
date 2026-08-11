@@ -22,7 +22,8 @@ pub(super) fn render_mod() -> TokenStream {
         pub(crate) use parameter_serialization::{
             serialize_cookie_value, serialize_parameter_value, serialize_path_parameter_value,
         };
-        pub(crate) use transport::{HttpResponse, RequestOptions};
+        #[allow(unused_imports)]
+        pub(crate) use transport::{HttpResponse, RequestBody, RequestOptions};
     }
 }
 

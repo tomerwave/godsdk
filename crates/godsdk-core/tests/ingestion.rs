@@ -32,7 +32,7 @@ fn accepts_openapi_30_and_normalizes_nullable_schema_values() {
 
 #[test]
 fn accepts_yaml_null_schema_types_from_openapi_31() {
-    let spec = parse_fixture("anchor-null-schema-3.1.yaml");
+    let spec = parse_fixture("null-schema-3.1.yaml");
 
     assert!(matches!(
         spec.operations
@@ -74,12 +74,36 @@ fn preserves_untyped_json_schemas_as_explicit_any_values() {
 }
 
 #[test]
-fn preserves_the_base_type_of_non_string_enums() {
+fn preserves_typed_non_string_enums() {
     let spec = parse_fixture("typed-enum-3.1.yaml");
 
     assert!(matches!(
-        spec.operations[0].parameters[0].schema,
-        Schema::Integer { .. }
+        &spec.operations[0].parameters[0].schema,
+        Schema::TypedEnum { base, values }
+            if matches!(base.as_ref(), Schema::Integer { .. })
+                && values.len() == 3
+    ));
+}
+
+#[test]
+fn preserves_multipart_requests_and_binary_responses() {
+    let spec = parse_fixture("multipart-binary-3.1.yaml");
+    let operation = &spec.operations[0];
+
+    assert_eq!(
+        operation
+            .request_body_details
+            .as_ref()
+            .map(|body| body.content_type.as_str()),
+        Some("multipart/form-data")
+    );
+    assert_eq!(
+        operation.responses[0].content_type.as_deref(),
+        Some("application/octet-stream")
+    );
+    assert!(matches!(
+        operation.responses[0].schema,
+        Some(Schema::String { format: Some(ref format) }) if format == "binary"
     ));
 }
 

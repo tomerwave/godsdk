@@ -70,6 +70,51 @@ fn generates_rust_raw_identifiers_for_reserved_properties() {
 }
 
 #[test]
+fn generated_rust_runtime_supports_multipart_and_binary_contracts() {
+    let (_output, request) = generated_fixture("multipart-binary-3.1.yaml");
+
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+
+    let transport = std::fs::read_to_string(
+        request
+            .output_path()
+            .join("sdk/rust/src/client/transport.rs"),
+    )
+    .unwrap_or_else(|error| panic!("generated transport is readable: {error}"));
+    let operation =
+        std::fs::read_to_string(request.output_path().join("sdk/rust/src/operations/mod.rs"))
+            .unwrap_or_else(|error| panic!("generated operation is readable: {error}"));
+    assert!(transport.contains("Multipart"));
+    assert!(operation.contains("MultipartJson"));
+    assert!(operation.contains("Vec<u8>"));
+}
+
+#[test]
+fn generated_targets_preserve_composition_shapes() {
+    let (_output, request) = generated_fixture("schemas-composition-3.1.yaml");
+    let request = request.with_targets([Target::Rust, Target::TypeScript, Target::Python]);
+
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+
+    let rust_union =
+        std::fs::read_to_string(request.output_path().join("sdk/rust/src/models/item.rs"))
+            .unwrap_or_else(|error| panic!("generated Rust union is readable: {error}"));
+    let typescript =
+        std::fs::read_to_string(request.output_path().join("sdk/typescript/src/schemas.ts"))
+            .unwrap_or_else(|error| panic!("generated TypeScript schemas are readable: {error}"));
+    let python = std::fs::read_to_string(
+        request
+            .output_path()
+            .join("sdk/python/schemas_and_composition_fixture_api/models.py"),
+    )
+    .unwrap_or_else(|error| panic!("generated Python models are readable: {error}"));
+    assert!(rust_union.contains("pub enum Item"));
+    assert!(typescript.contains("z.union"));
+    assert!(typescript.contains("z.intersection"));
+    assert!(python.contains("Item: TypeAlias = Product | Service"));
+}
+
+#[test]
 fn generated_repository_includes_godlint_policy() {
     let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
     let request =

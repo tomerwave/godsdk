@@ -99,7 +99,7 @@ fn public_arguments(operation: &Operation, spec: &ApiIr) -> String {
             .as_ref()
             .map(|schema| schema_validator_name(schema, spec))
             .unwrap_or_else(|| "NativeValueSchema".to_string());
-        arguments.push(format!("JSON.stringify({schema}.parse(requestBody))"));
+        arguments.push(native_json_argument(body, &schema, "requestBody"));
     }
     arguments.extend(
         ordered_parameters(operation)
@@ -118,7 +118,8 @@ fn public_arguments(operation: &Operation, spec: &ApiIr) -> String {
             .map(|schema| schema_validator_name(schema, spec))
             .unwrap_or_else(|| "NativeValueSchema".to_string());
         arguments.push(format!(
-            "requestBody === undefined ? undefined : JSON.stringify({schema}.parse(requestBody))"
+            "requestBody === undefined ? undefined : {}",
+            native_json_argument(body, &schema, "requestBody")
         ));
     }
     arguments.extend(
@@ -128,6 +129,17 @@ fn public_arguments(operation: &Operation, spec: &ApiIr) -> String {
             .map(|parameter| ts_identifier(&parameter.name)),
     );
     arguments.join(", ")
+}
+
+fn native_json_argument(body: &crate::RequestBody, schema: &str, variable: &str) -> String {
+    if body.content_type == "multipart/form-data" || body.content_type == "application/octet-stream"
+    {
+        format!(
+            "JSON.stringify({schema}.parse({variable}), (_key, value) => value instanceof Uint8Array ? Array.from(value) : value)"
+        )
+    } else {
+        format!("JSON.stringify({schema}.parse({variable}))")
+    }
 }
 
 fn public_result(operation: &Operation, spec: &ApiIr) -> (String, String, String) {
@@ -320,7 +332,11 @@ fn native_error_arm(response: &crate::Response, error_type: &str) -> Option<Stri
 fn native_rust_schema_type(schema: &Schema, crate_name: &str) -> String {
     match schema {
         Schema::Reference(name) => format!("{crate_name}::{}", type_identifier(name)),
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => "Vec<u8>".to_string(),
         Schema::String { .. } => "String".to_string(),
+        Schema::TypedEnum { base, .. } => native_rust_schema_type(base, crate_name),
         Schema::Integer { .. } => "i64".to_string(),
         Schema::Number { .. } => "f64".to_string(),
         Schema::Boolean => "bool".to_string(),

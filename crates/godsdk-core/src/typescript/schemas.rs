@@ -130,6 +130,9 @@ pub(super) fn operation_response_name(operation: &Operation) -> String {
 fn zod_schema(schema: &Schema, spec: &ApiIr) -> String {
     match schema {
         Schema::Any => "z.unknown()".to_string(),
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => "z.instanceof(Uint8Array)".to_string(),
         Schema::String { .. } => "z.string()".to_string(),
         Schema::Integer { .. } => "z.number().int()".to_string(),
         Schema::Number { .. } => "z.number()".to_string(),
@@ -142,6 +145,14 @@ fn zod_schema(schema: &Schema, spec: &ApiIr) -> String {
             values
                 .iter()
                 .map(|value| format!("{value:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Schema::TypedEnum { values, .. } => format!(
+            "z.union([{}])",
+            values
+                .iter()
+                .map(|value| format!("z.literal({value})"))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),

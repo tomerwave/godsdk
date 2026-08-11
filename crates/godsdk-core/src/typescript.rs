@@ -396,6 +396,9 @@ fn render_index_methods(spec: &ApiIr) -> String {
 fn schema_type_name(schema: &Schema, spec: &ApiIr) -> String {
     match schema {
         Schema::Reference(name) if spec.schemas.contains_key(name) => type_alias_name(name),
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => "Uint8Array".to_string(),
         Schema::String { .. } => "string".to_string(),
         Schema::Integer { .. } | Schema::Number { .. } => "number".to_string(),
         Schema::Boolean => "boolean".to_string(),
@@ -415,6 +418,9 @@ pub(super) fn type_alias_name(name: &str) -> String {
 
 fn native_schema_type_name(schema: &Schema, spec: &ApiIr) -> String {
     match schema {
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => "Uint8Array".to_string(),
         Schema::String { .. } => "string".to_string(),
         Schema::Integer { .. } | Schema::Number { .. } => "number".to_string(),
         Schema::Boolean => "boolean".to_string(),
@@ -457,9 +463,7 @@ fn render_client_test(spec: &ApiIr) -> String {
         String::from_utf8(mock_success_body(spec, operation)).unwrap_or_else(|_| "{}".to_string());
     let mut arguments = Vec::new();
     if operation.request_body_details.is_some() {
-        let request_json = String::from_utf8(mock_request_body(spec, operation))
-            .unwrap_or_else(|_| "null".to_string());
-        arguments.push(request_json);
+        arguments.push(mock_typescript_request_body(spec, operation));
     }
     arguments.extend(
         ordered_parameters(operation)
@@ -471,6 +475,69 @@ fn render_client_test(spec: &ApiIr) -> String {
     format!(
         "import {{ createServer }} from \"node:http\";\nimport {{ afterAll, beforeAll, describe, expect, it }} from \"vitest\";\nimport {{ Client }} from \"../src/index.js\";\n\nconst server = createServer((_request, response) => {{\n  response.writeHead(200, {{ \"content-type\": \"application/json\" }});\n  response.end(JSON.stringify({success_json}));\n}});\nlet baseUrl = \"\";\n\nbeforeAll(async () => {{\n  await new Promise<void>((resolve) => server.listen(0, \"127.0.0.1\", resolve));\n  const address = server.address();\n  if (address === null || typeof address === \"string\") throw new Error(\"mock server did not bind\");\n  baseUrl = `http://127.0.0.1:${{address.port}}`;\n}});\n\nafterAll(() => server.close());\n\ndescribe(\"generated native client\", () => {{\n  it(\"calls the Rust-backed local mock API\", async () => {{\n    const response = await new Client(baseUrl).{method}({arguments});\n    expect(response).toEqual({success_json});\n  }});\n}});\n"
     )
+}
+
+fn mock_typescript_request_body(spec: &ApiIr, operation: &Operation) -> String {
+    let Some(body) = operation.request_body_details.as_ref() else {
+        return "undefined".to_string();
+    };
+    let value = serde_json::from_slice::<serde_json::Value>(&mock_request_body(spec, operation))
+        .unwrap_or(serde_json::Value::Null);
+    body.schema
+        .as_ref()
+        .map(|schema| mock_typescript_value(&value, schema, spec))
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn mock_typescript_value(value: &serde_json::Value, schema: &Schema, spec: &ApiIr) -> String {
+    match schema {
+        Schema::Reference(name) => spec
+            .schemas
+            .get(name)
+            .map(|schema| mock_typescript_value(value, schema, spec))
+            .unwrap_or_else(|| value.to_string()),
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => {
+            let bytes = value
+                .as_str()
+                .unwrap_or_default()
+                .as_bytes()
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("new Uint8Array([{bytes}])")
+        }
+        Schema::Object { properties, .. } => {
+            let fields = properties
+                .iter()
+                .map(|(name, schema)| {
+                    let value = value
+                        .as_object()
+                        .and_then(|object| object.get(name))
+                        .unwrap_or(&serde_json::Value::Null);
+                    format!("{name:?}: {}", mock_typescript_value(value, schema, spec))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{{fields}}}")
+        }
+        Schema::Array(item) => {
+            let values = value
+                .as_array()
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|value| mock_typescript_value(value, item, spec))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            format!("[{values}]")
+        }
+        _ => value.to_string(),
+    }
 }
 
 fn test_parameter_argument(parameter: &crate::Parameter) -> String {

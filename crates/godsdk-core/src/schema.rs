@@ -21,6 +21,10 @@ pub enum Schema {
         additional_properties: Option<Box<Schema>>,
     },
     Enum(Vec<String>),
+    TypedEnum {
+        base: Box<Schema>,
+        values: Vec<serde_json::Value>,
+    },
     Reference(String),
     Nullable(Box<Schema>),
     OneOf(Vec<Schema>),
@@ -110,7 +114,10 @@ fn enum_schema(
         "boolean" => Schema::Boolean,
         other => return Err(unsupported(path, &format!("unsupported enum type {other}"))),
     };
-    Ok(Some(schema))
+    Ok(Some(Schema::TypedEnum {
+        base: Box::new(schema),
+        values: values.to_vec(),
+    }))
 }
 
 fn typed_schema(

@@ -206,7 +206,7 @@ fn digest(contents: &str) -> String {
 
 pub(crate) fn render_rust_cargo(spec: &ApiIr) -> String {
     format!(
-        "[package]\nname = \"{}-sdk\"\nversion = \"0.1.0\"\nedition = \"2024\"\nrust-version = \"1.97\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[features]\ndefault = [\"rustls-tls\"]\nrustls-tls = [\"reqwest/rustls-tls\"]\nnative-tls = [\"reqwest/native-tls\"]\ntracing = [\"dep:tracing\"]\n\n[dependencies]\npercent-encoding = \"2\"\nreqwest = {{ version = \"0.12\", default-features = false, features = [\"json\"] }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\nthiserror = \"2\"\ntokio = {{ version = \"1\", features = [\"macros\", \"rt\", \"time\"] }}\ntracing = {{ version = \"0.1\", optional = true }}\nurl = \"2\"\n",
+        "[package]\nname = \"{}-sdk\"\nversion = \"0.1.0\"\nedition = \"2024\"\nrust-version = \"1.97\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[features]\ndefault = [\"rustls-tls\"]\nrustls-tls = [\"reqwest/rustls-tls\"]\nnative-tls = [\"reqwest/native-tls\"]\ntracing = [\"dep:tracing\"]\n\n[dependencies]\npercent-encoding = \"2\"\nreqwest = {{ version = \"0.12\", default-features = false, features = [\"json\", \"multipart\"] }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\nthiserror = \"2\"\ntokio = {{ version = \"1\", features = [\"macros\", \"rt\", \"time\"] }}\ntracing = {{ version = \"0.1\", optional = true }}\nurl = \"2\"\n",
         slug(&spec.title)
     )
 }

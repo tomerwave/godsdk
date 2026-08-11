@@ -36,6 +36,10 @@ fn model_tokens(name: &str, schema: &Schema, spec: &ApiIr) -> TokenStream {
     let ident = format_ident!("{}", rust_type_name(name));
     let body = match schema {
         Schema::Enum(values) => render_enum(&ident, values),
+        Schema::TypedEnum { base, .. } => {
+            let ty = schema_tokens(base);
+            quote! { pub type #ident = #ty; }
+        }
         Schema::OneOf(variants) | Schema::AnyOf(variants) => render_union(&ident, variants),
         Schema::Object { .. } | Schema::AllOf(_) => render_object(&ident, schema, spec),
         Schema::Reference(reference) => {
@@ -47,7 +51,13 @@ fn model_tokens(name: &str, schema: &Schema, spec: &ApiIr) -> TokenStream {
             quote! { pub type #ident = #ty; }
         }
     };
-    quote! { use std::collections::BTreeMap; use crate::*; #body }
+    quote! {
+        #[allow(unused_imports)]
+        use std::collections::BTreeMap;
+        #[allow(unused_imports)]
+        use crate::*;
+        #body
+    }
 }
 
 fn render_enum(ident: &syn::Ident, values: &[String]) -> TokenStream {
@@ -62,13 +72,15 @@ fn render_enum(ident: &syn::Ident, values: &[String]) -> TokenStream {
 }
 
 fn render_union(ident: &syn::Ident, variants: &[Schema]) -> TokenStream {
-    let variants = variants.iter().filter_map(|variant| match variant {
-        Schema::Reference(reference) => {
-            let variant_ident = format_ident!("{}", rust_type_name(reference));
-            let type_ident = format_ident!("{}", rust_type_name(reference));
-            Some(quote! { #variant_ident(#type_ident), })
-        }
-        _ => None,
+    let variants = variants.iter().enumerate().map(|(index, variant)| {
+        let (variant_ident, type_ident) = match variant {
+            Schema::Reference(reference) => (
+                format_ident!("{}", rust_type_name(reference)),
+                schema_tokens(variant),
+            ),
+            _ => (format_ident!("Variant{index}"), schema_tokens(variant)),
+        };
+        quote! { #variant_ident(#type_ident), }
     });
     quote! {
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -102,6 +114,9 @@ fn render_object(ident: &syn::Ident, schema: &Schema, spec: &ApiIr) -> TokenStre
 fn schema_tokens(schema: &Schema) -> TokenStream {
     match schema {
         Schema::Any => quote! { serde_json::Value },
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => quote! { Vec<u8> },
         Schema::String { .. } => quote! { String },
         Schema::Integer { .. } => quote! { i64 },
         Schema::Number { .. } => quote! { f64 },
@@ -131,6 +146,7 @@ fn schema_tokens(schema: &Schema) -> TokenStream {
         Schema::Enum(_) | Schema::OneOf(_) | Schema::AnyOf(_) | Schema::AllOf(_) => {
             quote! { serde_json::Value }
         }
+        Schema::TypedEnum { base, .. } => schema_tokens(base),
     }
 }
 

@@ -1,4 +1,5 @@
 use godsdk_core::{GenerationRequest, Target, generate};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -27,22 +28,68 @@ fn all_generated_targets_expose_the_same_conformance_contract() {
     assert!(python.contains("Literal[\"ok\"]") && python.contains("state: str"));
     assert_generated_rust_compiles(&request);
 
-    assert_typescript_native_is_deterministic(&fixture, &request);
+    assert_generated_targets_are_deterministic(&fixture, &request);
 }
 
-fn assert_typescript_native_is_deterministic(
+fn assert_generated_targets_are_deterministic(
     fixture: &std::path::Path,
     first_request: &GenerationRequest,
 ) {
     let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
-    let request = GenerationRequest::new(fixture, output.path().join("generated"))
-        .with_targets([Target::TypeScript]);
+    let request = GenerationRequest::new(fixture, output.path().join("generated")).with_targets([
+        Target::Rust,
+        Target::TypeScript,
+        Target::Python,
+    ]);
     generate(&request).unwrap_or_else(|error| panic!("second generation succeeds: {error}"));
+    let first = snapshot(first_request);
+    let second = snapshot(&request);
     assert_eq!(
-        read(first_request, "sdk/typescript/native/src/lib.rs"),
-        read(&request, "sdk/typescript/native/src/lib.rs"),
-        "TypeScript native Rust output is byte-stable across runs",
+        first.keys().collect::<Vec<_>>(),
+        second.keys().collect::<Vec<_>>()
     );
+    for (path, contents) in first {
+        assert_eq!(contents, second[&path], "generated target changed: {path}");
+    }
+}
+
+fn snapshot(request: &GenerationRequest) -> BTreeMap<String, Vec<u8>> {
+    let mut files = BTreeMap::new();
+    for target in ["sdk/rust", "sdk/typescript", "sdk/python"] {
+        let path = request.output_path().join(target);
+        collect_files(request.output_path(), &path, &mut files);
+    }
+    files
+}
+
+fn collect_files(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    files: &mut BTreeMap<String, Vec<u8>>,
+) {
+    for entry in std::fs::read_dir(path)
+        .unwrap_or_else(|error| panic!("generated directory is readable: {error}"))
+    {
+        let entry = entry.unwrap_or_else(|error| panic!("generated entry is readable: {error}"));
+        let path = entry.path();
+        if path.is_dir() && is_build_output(&path) {
+            continue;
+        }
+        if path.is_dir() {
+            collect_files(root, &path, files);
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or_else(|error| panic!("generated path is relative: {error}"));
+        let contents = std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("generated file is readable: {error}"));
+        files.insert(relative.to_string_lossy().into_owned(), contents);
+    }
+}
+
+fn is_build_output(path: &std::path::Path) -> bool {
+    path.file_name().is_some_and(|name| name == "target")
 }
 
 fn assert_generated_rust_compiles(request: &GenerationRequest) {

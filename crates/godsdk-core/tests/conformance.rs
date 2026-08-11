@@ -17,6 +17,7 @@ fn all_generated_targets_expose_the_same_conformance_contract() {
     let rust = read(&request, "sdk/rust/src/operations/mod.rs");
     assert!(rust.contains("HealthResponse") && rust.contains("ListItemsLimit"));
     assert!(rust.contains("Multipart") && rust.contains("binary_fields"));
+    assert!(rust.contains("serde_urlencoded::to_string(&request_body)"));
     let typescript = read(&request, "sdk/typescript/src/schemas.ts");
     assert!(typescript.contains("z.literal(\"ok\")") && typescript.contains("z.enum"));
     let python = read(

@@ -25,6 +25,27 @@ fn all_generated_targets_expose_the_same_conformance_contract() {
         "sdk/python/cross_language_conformance_api/models.py",
     );
     assert!(python.contains("Literal[\"ok\"]") && python.contains("state: str"));
+    assert_generated_rust_compiles(&request);
+
+    assert_typescript_native_is_deterministic(&fixture, &request);
+}
+
+fn assert_typescript_native_is_deterministic(
+    fixture: &std::path::Path,
+    first_request: &GenerationRequest,
+) {
+    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+    let request = GenerationRequest::new(fixture, output.path().join("generated"))
+        .with_targets([Target::TypeScript]);
+    generate(&request).unwrap_or_else(|error| panic!("second generation succeeds: {error}"));
+    assert_eq!(
+        read(first_request, "sdk/typescript/native/src/lib.rs"),
+        read(&request, "sdk/typescript/native/src/lib.rs"),
+        "TypeScript native Rust output is byte-stable across runs",
+    );
+}
+
+fn assert_generated_rust_compiles(request: &GenerationRequest) {
     let status = Command::new("cargo")
         .args(["check", "--locked"])
         .current_dir(request.output_path().join("sdk/rust"))

@@ -1,6 +1,8 @@
 use crate::code_writer::CodeWriter;
 use crate::rust_ast::{inline_parameter_type_name, inline_request_body_type_name};
 use crate::{ApiIr, Operation, ParameterLocation, Schema, rust_identifier};
+use proc_macro2::TokenStream;
+use quote::quote;
 
 use super::{
     has_error_responses, operation_response_name, ordered_parameters, schema_model_name,
@@ -173,11 +175,11 @@ fn public_result(operation: &Operation, spec: &ApiIr) -> (String, String, String
     (return_type, success, error_handling)
 }
 
-pub(super) fn render_native_operation(operation: &Operation, crate_name: &str) -> String {
+pub(super) fn render_native_operation(operation: &Operation, crate_name: &str) -> TokenStream {
     let (parameters, conversions, arguments) = native_inputs(operation, crate_name);
     let method = rust_identifier(&operation.operation_id);
     let body = native_call_body(operation, &method, &arguments);
-    CodeWriter::from_parts([
+    let source = CodeWriter::from_parts([
         "    #[napi]\n    pub async fn ".to_string(),
         method,
         "(&self".to_string(),
@@ -186,7 +188,11 @@ pub(super) fn render_native_operation(operation: &Operation, crate_name: &str) -
         conversions,
         body,
         "    }\n\n".to_string(),
-    ])
+    ]);
+    let item = syn::parse_str::<syn::ImplItemFn>(&source).unwrap_or_else(|error| {
+        panic!("TypeScript native operation emitted invalid Rust: {error}")
+    });
+    quote! { #item }
 }
 
 fn native_inputs(operation: &Operation, crate_name: &str) -> (String, String, String) {

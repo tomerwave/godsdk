@@ -315,8 +315,11 @@ fn parameter_type_for(
     parameter: &crate::Parameter,
     spec: &ApiIr,
 ) -> TokenStream {
-    let inline = matches!(parameter.schema, Schema::TypedEnum { .. })
-        .then(|| inline_parameter_type_name(operation, parameter));
+    let inline = matches!(
+        parameter.schema,
+        Schema::TypedEnum { .. } | Schema::Const { .. }
+    )
+    .then(|| inline_parameter_type_name(operation, parameter));
     parameter_type(&parameter.schema, spec, inline.as_ref())
 }
 
@@ -452,7 +455,7 @@ fn request_body_argument(
         .schema
         .as_ref()
         .map(|schema| {
-            let inline = matches!(schema, Schema::TypedEnum { .. })
+            let inline = matches!(schema, Schema::TypedEnum { .. } | Schema::Const { .. })
                 .then(|| inline_request_body_type_name(operation));
             parameter_type(schema, spec, inline.as_ref())
         })

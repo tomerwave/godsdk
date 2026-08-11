@@ -46,8 +46,11 @@ fn operation_definitions(operation: &Operation) -> Vec<TokenStream> {
 }
 
 fn typed_definition(name: &syn::Ident, schema: &Schema) -> Option<TokenStream> {
-    let Schema::TypedEnum { base, values } = schema else {
-        return None;
-    };
-    Some(typed_enum_tokens(name, base, values))
+    match schema {
+        Schema::TypedEnum { base, values } => Some(typed_enum_tokens(name, base, values)),
+        Schema::Const { base, value } => {
+            Some(typed_enum_tokens(name, base, std::slice::from_ref(value)))
+        }
+        _ => None,
+    }
 }

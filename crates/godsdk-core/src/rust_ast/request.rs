@@ -486,9 +486,9 @@ fn request_body_constructor(
     binary_fields: &[syn::LitStr],
 ) -> TokenStream {
     if content_type == "multipart/form-data" {
-        quote! { |bytes| RequestBody::Multipart { bytes, binary_fields: &[#(#binary_fields),*] } }
+        quote! { (|bytes| RequestBody::Multipart { bytes, binary_fields: &[#(#binary_fields),*] }) }
     } else {
-        quote! { |bytes| RequestBody::Bytes { content_type: #content_type_literal, bytes } }
+        quote! { (|bytes| RequestBody::Bytes { content_type: #content_type_literal, bytes }) }
     }
 }
 

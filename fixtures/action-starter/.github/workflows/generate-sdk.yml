@@ -1,0 +1,32 @@
+name: Generate SDKs
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Generation mode
+        required: true
+        default: dry-run
+        type: choice
+        options: [dry-run, check, write]
+      commit:
+        description: Push generated changes to an isolated branch
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    uses: tomerwave/godsdk/.github/workflows/generate-sdk.yml@d50d7166003259bdd270a7486bcf7a424a099d88 # v0.1.2
+    with:
+      spec-path: api/openapi.yaml
+      targets: rust,typescript,python
+      output: .
+      mode: ${{ inputs.mode }}
+      commit: ${{ inputs.commit }}
+      generator-version: 0.1.2
+      godlint-version: 0.7.0
+      godharness-version: 0.1.6

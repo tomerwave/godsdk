@@ -2,6 +2,13 @@ name: Generate SDK
 
 on:
   workflow_call:
+    outputs:
+      changed-files:
+        description: Newline-separated generated paths changed by this invocation.
+        value: ${{ jobs.generate.outputs.changed-files }}
+      summary:
+        description: One-line generation summary for this invocation.
+        value: ${{ jobs.generate.outputs.summary }}
     inputs:
       spec-path:
         required: false
@@ -103,14 +110,21 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+
+concurrency:
+  group: godsdk-generation-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   generate:
     runs-on: ubuntu-latest
+    outputs:
+      changed-files: ${{ steps.godsdk.outputs.changed-files }}
+      summary: ${{ steps.godsdk.outputs.summary }}
     steps:
       - uses: actions/checkout@v4
-      - uses: tomerwave/godsdk@d50d7166003259bdd270a7486bcf7a424a099d88 # v0.1.2
+      - id: godsdk
+        uses: tomerwave/godsdk@d50d7166003259bdd270a7486bcf7a424a099d88 # v0.1.2; update after the next Godsdk release
         with:
           spec-path: ${{ inputs.spec-path }}
           spec-url: ${{ inputs.spec-url }}
@@ -148,6 +162,16 @@ jobs:
         with:
           name: godsdk-generated
           path: ${{ inputs.output }}
+          if-no-files-found: error
+      - name: Summarize generated changes
+        env:
+          GODSDK_SUMMARY: ${{ steps.godsdk.outputs.summary }}
+          GODSDK_CHANGED_FILES: ${{ steps.godsdk.outputs.changed-files }}
+        run: |
+          echo "${GODSDK_SUMMARY}"
+          if [ -n "${GODSDK_CHANGED_FILES}" ]; then
+            printf '%s\n' "${GODSDK_CHANGED_FILES}"
+          fi
       - name: Report commit mode boundary
         if: inputs.commit == true
         run: echo "Generation preview completed; the authorized commit job will rerun the pinned generator."
@@ -160,7 +184,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: tomerwave/godsdk@d50d7166003259bdd270a7486bcf7a424a099d88 # v0.1.2
+      - uses: tomerwave/godsdk@d50d7166003259bdd270a7486bcf7a424a099d88 # v0.1.2; update after the next Godsdk release
         with:
           spec-path: ${{ inputs.spec-path }}
           spec-url: ${{ inputs.spec-url }}
@@ -197,8 +221,5 @@ jobs:
       - name: Commit generated changes
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A
-          git diff --cached --quiet || (git commit -m "chore: update generated SDK" && git push)
+          BRANCH: godsdk/update-${{ github.run_id }}
+        run: bash scripts/publish_generated_sdk.sh

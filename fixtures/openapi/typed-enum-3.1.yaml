@@ -10,8 +10,12 @@ paths:
         - name: limit
           in: query
           schema:
-            type: integer
-            enum: [10, 20, 50]
+            $ref: '#/components/schemas/Limit'
       responses:
         '200':
           description: Items
+components:
+  schemas:
+    Limit:
+      type: integer
+      enum: [10, 20, 50]

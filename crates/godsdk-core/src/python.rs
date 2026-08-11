@@ -1,5 +1,7 @@
 #[path = "python/errors_render.rs"]
 mod errors_render;
+#[path = "python/identifiers.rs"]
+mod identifiers;
 #[path = "python/models_render.rs"]
 mod models_render;
 #[path = "python/operations_render.rs"]
@@ -8,9 +10,10 @@ mod operations_render;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use super::code_writer::CodeWriter;
+use super::code_writer::{CodeWriter, concatenate};
 use crate::{ApiIr, Operation, Schema, rust_identifier};
 use errors_render::{python_error_contract_lines, python_error_file_lines};
+use identifiers::{python_identifier, slug, type_identifier};
 use models_render::render_models;
 use operations_render::{client_method, native_method};
 
@@ -21,13 +24,22 @@ pub(crate) fn render_python_files(spec: &ApiIr) -> Vec<(String, String)> {
             "sdk/python/pyproject.toml".to_string(),
             pyproject(spec, &package),
         ),
-        (format!("sdk/python/{package}/__init__.py"), init_file(spec)),
         (
-            format!("sdk/python/{package}/models.py"),
+            concatenate(&["sdk/python/", &package, "/__init__.py"]),
+            init_file(spec),
+        ),
+        (
+            concatenate(&["sdk/python/", &package, "/models.py"]),
             render_models(spec),
         ),
-        (format!("sdk/python/{package}/errors.py"), errors(spec)),
-        (format!("sdk/python/{package}/client.py"), client(spec)),
+        (
+            concatenate(&["sdk/python/", &package, "/errors.py"]),
+            errors(spec),
+        ),
+        (
+            concatenate(&["sdk/python/", &package, "/client.py"]),
+            client(spec),
+        ),
         (
             "sdk/python/native/Cargo.toml".to_string(),
             native_cargo(spec),
@@ -52,13 +64,13 @@ fn pyproject(spec: &ApiIr, package: &str) -> String {
         "build-backend = \"maturin\"".to_string(),
         String::new(),
         "[project]".to_string(),
-        format!("name = \"{project}-sdk\""),
+        concatenate(&["name = \"", &project, "-sdk\""]),
         "version = \"0.1.0\"".to_string(),
         "dependencies = [\"pydantic>=2.0,<3\"]".to_string(),
         String::new(),
         "[tool.maturin]".to_string(),
         "manifest-path = \"native/Cargo.toml\"".to_string(),
-        format!("module-name = \"{package}._native\""),
+        concatenate(&["module-name = \"", package, "._native\""]),
         "python-source = \".\"".to_string(),
     ])
 }
@@ -69,7 +81,7 @@ fn init_file(spec: &ApiIr) -> String {
         spec.operations
             .iter()
             .filter(|operation| has_error_responses(operation))
-            .map(|operation| format!("{}Error", type_identifier(&operation.operation_id))),
+            .map(|operation| concatenate(&[&type_identifier(&operation.operation_id), "Error"])),
     );
     exports.extend(spec.schemas.keys().cloned());
     exports.extend(
@@ -98,10 +110,13 @@ fn init_file(spec: &ApiIr) -> String {
         .join(", ");
     CodeWriter::from_lines([
         "from .client import Client".to_string(),
-        format!("from .errors import {error_imports}"),
-        format!("from .models import {imports}"),
+        concatenate(&["from .errors import ", &error_imports]),
+        concatenate(&["from .models import ", &imports]),
         String::new(),
-        format!("__all__ = {exports:?}"),
+        concatenate(&[
+            "__all__ = ",
+            &serde_json::to_string(&exports).unwrap_or_else(|_| "[]".to_string()),
+        ]),
     ])
 }
 
@@ -127,7 +142,7 @@ fn errors(spec: &ApiIr) -> String {
         })
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
-        .map(|name| format!("from .models import {name}"))
+        .map(|name| concatenate(&["from .models import ", &name]))
         .collect::<Vec<_>>();
     let contracts = spec
         .operations
@@ -140,8 +155,19 @@ fn errors(spec: &ApiIr) -> String {
 
 fn error_contract(operation: &Operation, spec: &ApiIr) -> String {
     let operation_name = type_identifier(&operation.operation_id);
-    let name = format!("{operation_name}Error");
-    let subclasses = operation
+    let name = concatenate(&[&operation_name, "Error"]);
+    let subclasses = error_subclasses(operation, &operation_name, &name, spec);
+    let arms = error_arms(operation, &operation_name, spec);
+    CodeWriter::from_lines(python_error_contract_lines(&name, &arms, &subclasses))
+}
+
+fn error_subclasses(
+    operation: &Operation,
+    operation_name: &str,
+    name: &str,
+    spec: &ApiIr,
+) -> Vec<String> {
+    operation
         .responses
         .iter()
         .filter(|response| !response.status.starts_with('2'))
@@ -153,14 +179,25 @@ fn error_contract(operation: &Operation, spec: &ApiIr) -> String {
                 .and_then(|schema| known_schema_model_name(schema, spec))
                 .unwrap_or_else(|| "JsonValue".to_string());
             Some(vec![
-                format!("class {operation_name}Status{status}Error({name}):"),
-                format!("    body: {body_type}"),
+                concatenate(&[
+                    "class ",
+                    operation_name,
+                    "Status",
+                    &status.to_string(),
+                    "Error(",
+                    name,
+                    "):",
+                ]),
+                concatenate(&["    body: ", &body_type]),
                 String::new(),
             ])
         })
         .flatten()
-        .collect::<Vec<_>>();
-    let arms = operation
+        .collect()
+}
+
+fn error_arms(operation: &Operation, operation_name: &str, spec: &ApiIr) -> Vec<String> {
+    operation
         .responses
         .iter()
         .filter(|response| !response.status.starts_with('2'))
@@ -171,19 +208,32 @@ fn error_contract(operation: &Operation, spec: &ApiIr) -> String {
                 .as_ref()
                 .and_then(|schema| known_schema_model_name(schema, spec))
                 .map_or_else(
-                    || format!("{operation_name}Status{status}Error(status, body)"),
+                    || {
+                        concatenate(&[
+                            operation_name,
+                            "Status",
+                            &status.to_string(),
+                            "Error(status, body)",
+                        ])
+                    },
                     |model| {
-                        format!("{operation_name}Status{status}Error(status, {model}.model_validate(body))")
+                        concatenate(&[
+                            operation_name,
+                            "Status",
+                            &status.to_string(),
+                            "Error(status, ",
+                            &model,
+                            ".model_validate(body))",
+                        ])
                     },
                 );
             Some(vec![
-                format!("        if status == {status}:"),
-                format!("            return {constructor}"),
+                concatenate(&["        if status == ", &status.to_string(), ":"]),
+                concatenate(&["            return ", &constructor]),
             ])
         })
         .flatten()
-        .collect::<Vec<_>>();
-    CodeWriter::from_lines(python_error_contract_lines(&name, &arms, &subclasses))
+        .collect()
 }
 
 fn client(spec: &ApiIr) -> String {
@@ -316,7 +366,7 @@ fn native_result_helper(operation: &Operation) -> TokenStream {
         return quote! {};
     }
     let method = rust_identifier(&operation.operation_id);
-    let error_type = format!("{}Error", type_identifier(&operation.operation_id));
+    let error_type = concatenate(&[&type_identifier(&operation.operation_id), "Error"]);
     let arms = native_result_arms(operation, &error_type);
     let source = CodeWriter::from_parts([
         "fn encode_".to_string(),
@@ -420,68 +470,9 @@ fn inline_success_schema(operation: &Operation) -> Option<&Schema> {
 }
 
 fn operation_response_name(operation: &Operation) -> String {
-    format!("{}Response", type_identifier(&operation.operation_id))
+    concatenate(&[&type_identifier(&operation.operation_id), "Response"])
 }
 
 fn package_name(spec: &ApiIr) -> String {
     slug(&spec.title).replace('-', "_")
-}
-
-fn type_identifier(value: &str) -> String {
-    python_identifier(&super::rust_identifier(value))
-        .split('_')
-        .map(|part| {
-            let mut chars = part.chars();
-            chars.next().map_or_else(String::new, |first| {
-                first.to_ascii_uppercase().to_string() + chars.as_str()
-            })
-        })
-        .collect()
-}
-
-fn python_identifier(value: &str) -> String {
-    let mut output = value
-        .split(['-', '_', ' ', '.'])
-        .filter(|part| !part.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect::<Vec<_>>()
-        .join("_");
-    if output.is_empty() {
-        output.push_str("value");
-    }
-    if output
-        .chars()
-        .next()
-        .is_some_and(|character| character.is_ascii_digit())
-    {
-        output.insert(0, '_');
-    }
-    if PYTHON_KEYWORDS.contains(&output.as_str()) {
-        output.push('_');
-    }
-    output
-}
-
-const PYTHON_KEYWORDS: &[&str] = &[
-    "and", "as", "assert", "async", "await", "break", "case", "class", "continue", "def", "del",
-    "elif", "else", "except", "False", "finally", "for", "from", "global", "if", "import", "in",
-    "is", "lambda", "match", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True",
-    "try", "while", "with", "yield",
-];
-
-fn slug(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
 }

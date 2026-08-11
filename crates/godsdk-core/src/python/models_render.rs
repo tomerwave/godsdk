@@ -2,7 +2,7 @@ use super::{
     ApiIr, Operation, Schema, inline_success_schema, operation_response_name, python_identifier,
     schema_model_name, type_identifier,
 };
-use crate::code_writer::CodeWriter;
+use crate::code_writer::{CodeWriter, concatenate};
 
 pub(super) fn render_models(spec: &ApiIr) -> String {
     let mut lines = vec![
@@ -83,15 +83,16 @@ fn enum_lines(name: &str, schema: &Schema) -> Option<Vec<String>> {
 
 fn alias_lines(name: &str, schema: &Schema) -> Option<Vec<String>> {
     let expression = match schema {
-        Schema::TypedEnum { values, .. } => format!(
-            "Literal[{}]",
-            values
+        Schema::TypedEnum { values, .. } => concatenate(&[
+            "Literal[",
+            &values
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Schema::Const { value, .. } => format!("Literal[{value}]"),
+                .join(", "),
+            "]",
+        ]),
+        Schema::Const { value, .. } => concatenate(&["Literal[", &value.to_string(), "]"]),
         Schema::OneOf(values) | Schema::AnyOf(values) => values
             .iter()
             .map(python_type)
@@ -126,7 +127,13 @@ fn object_model_lines(name: &str, schema: &Schema, spec: &ApiIr) -> Vec<String> 
 fn render_field((property, property_schema, required): (String, Schema, bool)) -> String {
     let identifier = python_identifier(&property);
     let annotation = python_type(&property_schema);
-    let field = (identifier != property).then(|| format!("Field(alias={property:?})"));
+    let field = (identifier != property).then(|| {
+        concatenate(&[
+            "Field(alias=",
+            &serde_json::to_string(&property).unwrap_or_default(),
+            ")",
+        ])
+    });
     let suffix = field.as_deref().map_or_else(
         || {
             if required {
@@ -137,9 +144,9 @@ fn render_field((property, property_schema, required): (String, Schema, bool)) -
         },
         |field| {
             if required {
-                format!(" = {field}")
+                concatenate(&[" = ", field])
             } else {
-                format!(" | None = {field}")
+                concatenate(&[" | None = ", field])
             }
         },
     );

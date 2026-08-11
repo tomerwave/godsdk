@@ -17,7 +17,7 @@ pub(super) fn ts_property(value: &str) -> String {
     {
         value.to_string()
     } else {
-        format!("{value:?}")
+        serde_json::to_string(value).unwrap_or_default()
     }
 }
 

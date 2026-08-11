@@ -2,14 +2,21 @@ use super::super::rust_ast::{mock_request_body, mock_success_body};
 use super::super::{ApiIr, Operation, Schema};
 use super::identifiers::ts_identifier;
 use super::ordered_parameters;
+use crate::code_writer::concatenate;
 
 pub(super) fn render_validation_test(spec: &ApiIr) -> String {
     let Some(name) = spec.schemas.keys().next() else {
         return "import { describe, it } from \"vitest\";\n\ndescribe(\"generated schemas\", () => { it(\"has no models\", () => {}); });\n".to_string();
     };
-    format!(
-        "import {{ describe, expect, it }} from \"vitest\";\nimport {{ {name}Schema }} from \"../src/schemas.js\";\n\ndescribe(\"generated schemas\", () => {{\n  it(\"rejects invalid {name}\", () => {{\n    expect(() => {name}Schema.parse({{}})).toThrow();\n  }});\n}});\n"
-    )
+    concatenate(&[
+        "import { describe, expect, it } from \"vitest\";\nimport { ",
+        name,
+        "Schema } from \"../src/schemas.js\";\n\ndescribe(\"generated schemas\", () => {\n  it(\"rejects invalid ",
+        name,
+        "\", () => {\n    expect(() => ",
+        name,
+        "Schema.parse({})).toThrow();\n  });\n});\n",
+    ])
 }
 
 pub(super) fn render_client_test(spec: &ApiIr) -> String {
@@ -31,9 +38,17 @@ pub(super) fn render_client_test(spec: &ApiIr) -> String {
             .map(test_parameter_argument),
     );
     let arguments = arguments.join(", ");
-    format!(
-        "import {{ createServer }} from \"node:http\";\nimport {{ afterAll, beforeAll, describe, expect, it }} from \"vitest\";\nimport {{ Client }} from \"../src/index.js\";\n\nconst server = createServer((_request, response) => {{\n  response.writeHead(200, {{ \"content-type\": \"application/json\" }});\n  response.end(JSON.stringify({success_json}));\n}});\nlet baseUrl = \"\";\n\nbeforeAll(async () => {{\n  await new Promise<void>((resolve) => server.listen(0, \"127.0.0.1\", resolve));\n  const address = server.address();\n  if (address === null || typeof address === \"string\") throw new Error(\"mock server did not bind\");\n  baseUrl = `http://127.0.0.1:${{address.port}}`;\n}});\n\nafterAll(() => server.close());\n\ndescribe(\"generated native client\", () => {{\n  it(\"calls the Rust-backed local mock API\", async () => {{\n    const response = await new Client(baseUrl).{method}({arguments});\n    expect(response).toEqual({success_json});\n  }});\n}});\n"
-    )
+    concatenate(&[
+        "import { createServer } from \"node:http\";\nimport { afterAll, beforeAll, describe, expect, it } from \"vitest\";\nimport { Client } from \"../src/index.js\";\n\nconst server = createServer((_request, response) => {\n  response.writeHead(200, { \"content-type\": \"application/json\" });\n  response.end(JSON.stringify(",
+        &success_json,
+        "));\n});\nlet baseUrl = \"\";\n\nbeforeAll(async () => {\n  await new Promise<void>((resolve) => server.listen(0, \"127.0.0.1\", resolve));\n  const address = server.address();\n  if (address === null || typeof address === \"string\") throw new Error(\"mock server did not bind\");\n  baseUrl = `http://127.0.0.1:${address.port}`;\n});\n\nafterAll(() => server.close());\n\ndescribe(\"generated native client\", () => {\n  it(\"calls the Rust-backed local mock API\", async () => {\n    const response = await new Client(baseUrl).",
+        &method,
+        "(",
+        &arguments,
+        ");\n    expect(response).toEqual(",
+        &success_json,
+        ");\n  });\n});\n",
+    ])
 }
 
 fn mock_typescript_request_body(spec: &ApiIr, operation: &Operation) -> String {
@@ -57,44 +72,58 @@ fn mock_typescript_value(value: &serde_json::Value, schema: &Schema, spec: &ApiI
             .unwrap_or_else(|| value.to_string()),
         Schema::String {
             format: Some(format),
-        } if format == "binary" => format!(
-            "new Uint8Array([{}])",
-            value
-                .as_str()
-                .unwrap_or_default()
-                .as_bytes()
-                .iter()
-                .map(u8::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Schema::Object { properties, .. } => format!(
-            "{{{}}}",
-            properties
-                .iter()
-                .map(|(name, schema)| {
-                    let value = value
-                        .as_object()
-                        .and_then(|object| object.get(name))
-                        .unwrap_or(&serde_json::Value::Null);
-                    format!("{name:?}: {}", mock_typescript_value(value, schema, spec))
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Schema::Array(item) => format!(
-            "[{}]",
-            value
-                .as_array()
-                .map(|values| values
-                    .iter()
-                    .map(|value| mock_typescript_value(value, item, spec))
-                    .collect::<Vec<_>>()
-                    .join(", "))
-                .unwrap_or_default()
-        ),
+        } if format == "binary" => mock_binary_value(value),
+        Schema::Object { properties, .. } => mock_object_value(value, properties, spec),
+        Schema::Array(item) => mock_array_value(value, item, spec),
         _ => value.to_string(),
     }
+}
+
+fn mock_binary_value(value: &serde_json::Value) -> String {
+    let bytes = value
+        .as_str()
+        .unwrap_or_default()
+        .as_bytes()
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    concatenate(&["new Uint8Array([", &bytes, "])"])
+}
+
+fn mock_object_value(
+    value: &serde_json::Value,
+    properties: &std::collections::BTreeMap<String, Schema>,
+    spec: &ApiIr,
+) -> String {
+    let fields = properties
+        .iter()
+        .map(|(name, schema)| {
+            let value = value
+                .as_object()
+                .and_then(|object| object.get(name))
+                .unwrap_or(&serde_json::Value::Null);
+            let key = serde_json::to_string(name).unwrap_or_default();
+            let rendered = mock_typescript_value(value, schema, spec);
+            concatenate(&[&key, ": ", &rendered])
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    concatenate(&["{", &fields, "}"])
+}
+
+fn mock_array_value(value: &serde_json::Value, item: &Schema, spec: &ApiIr) -> String {
+    let values = value
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| mock_typescript_value(value, item, spec))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    concatenate(&["[", &values, "]"])
 }
 
 fn test_parameter_argument(parameter: &crate::Parameter) -> String {

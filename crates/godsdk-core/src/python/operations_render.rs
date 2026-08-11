@@ -1,4 +1,4 @@
-use crate::code_writer::CodeWriter;
+use crate::code_writer::{CodeWriter, concatenate};
 use crate::rust_ast::{inline_parameter_type_name, inline_request_body_type_name};
 use crate::{Operation, ParameterLocation, Schema, rust_identifier};
 use proc_macro2::TokenStream;
@@ -157,14 +157,14 @@ fn python_response_expression(operation: &Operation, return_type: &str) -> Strin
     match schema {
         Some(Schema::String {
             format: Some(format),
-        }) if format == "binary" => format!("bytes(raw[\"value\"])"),
+        }) if format == "binary" => "bytes(raw[\"value\"])".to_string(),
         Some(Schema::String { .. })
         | Some(Schema::Integer { .. })
         | Some(Schema::Number { .. })
         | Some(Schema::Boolean)
         | Some(Schema::TypedEnum { .. }) => "raw[\"value\"]".to_string(),
-        Some(Schema::Enum(_)) => format!("{return_type}(raw[\"value\"])"),
-        _ => format!("{return_type}.model_validate(raw[\"value\"])"),
+        Some(Schema::Enum(_)) => concatenate(&[return_type, "(raw[\"value\"])"]),
+        _ => concatenate(&[return_type, ".model_validate(raw[\"value\"])"]),
     }
 }
 
@@ -192,10 +192,10 @@ fn optional_body_argument(operation: &Operation) -> Option<String> {
         .as_ref()
         .filter(|body| !body.required)
         .map(|body| {
-            format!(
-                "None if request_body is None else {}",
-                body_json_expression(body, "request_body")
-            )
+            concatenate(&[
+                "None if request_body is None else ",
+                &body_json_expression(body, "request_body"),
+            ])
         })
 }
 
@@ -247,20 +247,26 @@ fn python_schema_type(schema: &Schema) -> String {
 
 fn body_json_expression(body: &crate::RequestBody, variable: &str) -> String {
     let Some(schema) = body.schema.as_ref() else {
-        return format!("json.dumps({variable})");
+        return concatenate(&["json.dumps(", variable, ")"]);
     };
     if body.content_type == "multipart/form-data" || body.content_type == "application/octet-stream"
     {
-        return format!(
-            "json.dumps({variable}.model_dump(mode=\"python\") if hasattr({variable}, \"model_dump\") else {variable}, default=lambda value: list(value) if isinstance(value, bytes) else value)"
-        );
+        return concatenate(&[
+            "json.dumps(",
+            variable,
+            ".model_dump(mode=\"python\") if hasattr(",
+            variable,
+            ", \"model_dump\") else ",
+            variable,
+            ", default=lambda value: list(value) if isinstance(value, bytes) else value)",
+        ]);
     }
     if python_schema_type(schema) == "JsonValue" {
-        format!("json.dumps({variable})")
+        concatenate(&["json.dumps(", variable, ")"])
     } else if schema_requires_alias(schema) {
-        format!("{variable}.model_dump_json(by_alias=True)")
+        concatenate(&[variable, ".model_dump_json(by_alias=True)"])
     } else {
-        format!("{variable}.model_dump_json()")
+        concatenate(&[variable, ".model_dump_json()"])
     }
 }
 

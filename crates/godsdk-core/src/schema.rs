@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Schema {
+    Any,
     String {
         format: Option<String>,
     },
@@ -20,6 +21,10 @@ pub enum Schema {
         additional_properties: Option<Box<Schema>>,
     },
     Enum(Vec<String>),
+    TypedEnum {
+        base: Box<Schema>,
+        values: Vec<serde_json::Value>,
+    },
     Reference(String),
     Nullable(Box<Schema>),
     OneOf(Vec<Schema>),
@@ -89,12 +94,30 @@ fn enum_schema(
     let Some(values) = object.get("enum").and_then(serde_json::Value::as_array) else {
         return Ok(None);
     };
-    let values = values
-        .iter()
-        .map(|value| value.as_str().map(ToOwned::to_owned))
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| unsupported(path, "only string enums are supported"))?;
-    Ok(Some(Schema::Enum(values)))
+    if values.iter().all(serde_json::Value::is_string) {
+        let values = values
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .collect();
+        return Ok(Some(Schema::Enum(values)));
+    }
+    let Some(type_name) = object.get("type").and_then(serde_json::Value::as_str) else {
+        return Err(unsupported(
+            path,
+            "non-string enum is missing its base type",
+        ));
+    };
+    let schema = match type_name {
+        "integer" => Schema::Integer { format: None },
+        "number" => Schema::Number { format: None },
+        "boolean" => Schema::Boolean,
+        other => return Err(unsupported(path, &format!("unsupported enum type {other}"))),
+    };
+    Ok(Some(Schema::TypedEnum {
+        base: Box::new(schema),
+        values: values.to_vec(),
+    }))
 }
 
 fn typed_schema(
@@ -107,7 +130,10 @@ fn typed_schema(
             .get("nullable")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-    let type_name = types.iter().find(|value| value.as_str() != "null");
+    let type_name = types
+        .iter()
+        .find(|value| value.as_str() != "null")
+        .or_else(|| types.first());
     let schema = match type_name.map(String::as_str) {
         Some("string") => scalar_schema(object, |format| Schema::String { format }),
         Some("integer") => scalar_schema(object, |format| Schema::Integer { format }),
@@ -116,7 +142,7 @@ fn typed_schema(
         Some("array") => array_schema(object, path)?,
         Some("object") => object_schema(object, path)?,
         Some("null") => Schema::Null,
-        None => return Err(unsupported(path, "schema is missing a type or composition")),
+        None => Schema::Any,
         Some(other) => {
             return Err(unsupported(
                 path,
@@ -133,14 +159,22 @@ fn typed_schema(
 
 fn schema_types(object: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
     match object.get("type") {
-        Some(serde_json::Value::String(value)) => vec![value.clone()],
+        Some(serde_json::Value::String(value)) => vec![normalize_schema_type(value)],
+        Some(serde_json::Value::Null) => vec!["null".to_string()],
         Some(serde_json::Value::Array(values)) => values
             .iter()
-            .filter_map(serde_json::Value::as_str)
-            .map(ToOwned::to_owned)
+            .filter_map(|value| match value {
+                serde_json::Value::Null => Some("null".to_string()),
+                serde_json::Value::String(value) => Some(normalize_schema_type(value)),
+                _ => None,
+            })
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn normalize_schema_type(value: &str) -> String {
+    value.trim_matches(['\'', '"']).to_ascii_lowercase()
 }
 
 fn scalar_schema(

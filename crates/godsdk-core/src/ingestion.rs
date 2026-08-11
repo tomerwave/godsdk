@@ -407,19 +407,43 @@ fn operation_id(
     path: &str,
     method_name: &str,
 ) -> Result<String, IngestionError> {
-    let operation_id =
-        operation
-            .operation_id
-            .clone()
-            .ok_or_else(|| IngestionError::MissingOperationId {
-                method: method_name.to_string(),
-                path: path.to_string(),
-            })?;
+    let operation_id = operation
+        .operation_id
+        .clone()
+        .unwrap_or_else(|| inferred_operation_id(method_name, path));
     if operation_ids.insert(operation_id.clone()) {
         Ok(operation_id)
     } else {
         Err(IngestionError::DuplicateOperationId { operation_id })
     }
+}
+
+fn inferred_operation_id(method_name: &str, path: &str) -> String {
+    let mut id = String::with_capacity(method_name.len() + path.len());
+    id.push_str(method_name);
+    for segment in path.split('/') {
+        if segment.is_empty() {
+            continue;
+        }
+        let segment = segment.trim_matches(['{', '}']);
+        let mut uppercase = true;
+        for character in segment.chars() {
+            if character.is_ascii_alphanumeric() {
+                if uppercase {
+                    id.push(character.to_ascii_uppercase());
+                    uppercase = false;
+                } else {
+                    id.push(character);
+                }
+            } else {
+                uppercase = true;
+            }
+        }
+    }
+    if id == method_name {
+        id.push_str("Root");
+    }
+    id
 }
 
 fn normalize_parameters(

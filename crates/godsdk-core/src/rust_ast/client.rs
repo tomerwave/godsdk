@@ -22,7 +22,8 @@ pub(super) fn render_mod() -> TokenStream {
         pub(crate) use parameter_serialization::{
             serialize_cookie_value, serialize_parameter_value, serialize_path_parameter_value,
         };
-        pub(crate) use transport::{HttpResponse, RequestOptions};
+        #[allow(unused_imports)]
+        pub(crate) use transport::{HttpResponse, RequestBody, RequestOptions};
     }
 }
 
@@ -128,7 +129,7 @@ fn auth_apply_function() -> TokenStream {
         pub(crate) fn apply_auth(
             request: reqwest::RequestBuilder,
             auth: &Auth,
-            requirements: Option<&[&[AuthRequirement]]>,
+            requirements: Option<&[Vec<AuthRequirement>]>,
         ) -> Result<reqwest::RequestBuilder, SdkError> {
             match requirements {
                 None => Ok(apply_all(request, auth)),
@@ -160,7 +161,7 @@ fn auth_selection_helpers() -> TokenStream {
         fn apply_selected(
             request: reqwest::RequestBuilder,
             auth: &Auth,
-            alternatives: &[&[AuthRequirement]],
+            alternatives: &[Vec<AuthRequirement>],
         ) -> Result<reqwest::RequestBuilder, SdkError> {
             let selected = alternatives.iter().find(|alternative| {
                 alternative

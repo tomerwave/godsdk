@@ -41,31 +41,58 @@ fn client_signature(operation: &Operation) -> (String, String, String) {
 
 fn python_parameters(operation: &Operation) -> String {
     let mut parameters = Vec::new();
-    if let Some(body) = operation.request_body_details.as_ref() {
+    if let Some(body) = operation
+        .request_body_details
+        .as_ref()
+        .filter(|body| body.required)
+    {
         let ty = body
             .schema
             .as_ref()
             .map(python_schema_type)
             .unwrap_or_else(|| "JsonValue".to_string());
-        parameters.push(if body.required {
-            ["request_body: ", &ty].concat()
-        } else {
-            ["request_body: ", &ty, " | None = None"].concat()
-        });
+        parameters.push(["request_body: ", &ty].concat());
     }
-    parameters.extend(ordered_parameters(operation).into_iter().map(|parameter| {
-        let name = python_identifier(&parameter.name);
-        let ty = if parameter.location == ParameterLocation::Path {
-            "str".to_string()
-        } else {
-            python_schema_type(&parameter.schema)
-        };
-        if parameter.required {
-            [name, ": ".to_string(), ty].concat()
-        } else {
-            [name, ": ".to_string(), ty, " | None = None".to_string()].concat()
-        }
-    }));
+    parameters.extend(
+        ordered_parameters(operation)
+            .into_iter()
+            .filter(|parameter| parameter.required)
+            .map(|parameter| {
+                let name = python_identifier(&parameter.name);
+                let ty = if parameter.location == ParameterLocation::Path {
+                    "str".to_string()
+                } else {
+                    python_schema_type(&parameter.schema)
+                };
+                [name, ": ".to_string(), ty].concat()
+            }),
+    );
+    if let Some(body) = operation
+        .request_body_details
+        .as_ref()
+        .filter(|body| !body.required)
+    {
+        let ty = body
+            .schema
+            .as_ref()
+            .map(python_schema_type)
+            .unwrap_or_else(|| "JsonValue".to_string());
+        parameters.push(["request_body: ", &ty, " | None = None"].concat());
+    }
+    parameters.extend(
+        ordered_parameters(operation)
+            .into_iter()
+            .filter(|parameter| !parameter.required)
+            .map(|parameter| {
+                let name = python_identifier(&parameter.name);
+                let ty = if parameter.location == ParameterLocation::Path {
+                    "str".to_string()
+                } else {
+                    python_schema_type(&parameter.schema)
+                };
+                [name, ": ".to_string(), ty, " | None = None".to_string()].concat()
+            }),
+    );
     parameters.join(", ")
 }
 
@@ -104,6 +131,7 @@ fn client_method_body(
             .concat()
         },
     );
+    let response = python_response_expression(operation, return_type);
     CodeWriter::from_parts([
         "        raw = cast(dict[str, JsonValue], json.loads(self._native.".to_string(),
         method.to_string(),
@@ -113,37 +141,95 @@ fn client_method_body(
         "        if raw[\"ok\"] is not True:\n".to_string(),
         error_handling,
         "\n        return ".to_string(),
-        return_type.to_string(),
-        ".model_validate(raw[\"value\"])\n".to_string(),
+        response,
+        "\n".to_string(),
     ])
+}
+
+#[allow(clippy::useless_format)]
+fn python_response_expression(operation: &Operation, return_type: &str) -> String {
+    let schema = operation
+        .responses
+        .iter()
+        .find(|response| response.status.starts_with('2'))
+        .and_then(|response| response.schema.as_ref());
+    match schema {
+        Some(Schema::String {
+            format: Some(format),
+        }) if format == "binary" => format!("bytes(raw[\"value\"])"),
+        Some(Schema::String { .. })
+        | Some(Schema::Integer { .. })
+        | Some(Schema::Number { .. })
+        | Some(Schema::Boolean)
+        | Some(Schema::TypedEnum { .. }) => "raw[\"value\"]".to_string(),
+        Some(Schema::Enum(_)) => format!("{return_type}(raw[\"value\"])"),
+        _ => format!("{return_type}.model_validate(raw[\"value\"])"),
+    }
 }
 
 fn native_arguments(operation: &Operation) -> String {
     let mut arguments = Vec::new();
-    if let Some(body) = operation.request_body_details.as_ref() {
-        arguments.push(if body.required {
-            "request_body.model_dump_json()".to_string()
-        } else {
-            "None if request_body is None else request_body.model_dump_json()".to_string()
-        });
+    if let Some(body) = operation
+        .request_body_details
+        .as_ref()
+        .filter(|body| body.required)
+    {
+        arguments.push(body_json_expression(body, "request_body"));
     }
-    arguments.extend(ordered_parameters(operation).into_iter().map(|parameter| {
-        let name = python_identifier(&parameter.name);
-        if parameter.location == ParameterLocation::Path {
-            name
-        } else if parameter.required {
-            ["json.dumps(", name.as_str(), ")"].concat()
-        } else {
-            [
-                "None if ",
-                name.as_str(),
-                " is None else json.dumps(",
-                name.as_str(),
-                ")",
-            ]
-            .concat()
-        }
-    }));
+    arguments.extend(
+        ordered_parameters(operation)
+            .into_iter()
+            .filter(|parameter| parameter.required)
+            .map(|parameter| {
+                let name = python_identifier(&parameter.name);
+                if parameter.location == ParameterLocation::Path {
+                    name
+                } else if parameter.required {
+                    ["json.dumps(", name.as_str(), ")"].concat()
+                } else {
+                    [
+                        "None if ",
+                        name.as_str(),
+                        " is None else json.dumps(",
+                        name.as_str(),
+                        ")",
+                    ]
+                    .concat()
+                }
+            }),
+    );
+    if let Some(body) = operation
+        .request_body_details
+        .as_ref()
+        .filter(|body| !body.required)
+    {
+        arguments.push(format!(
+            "None if request_body is None else {}",
+            body_json_expression(body, "request_body")
+        ));
+    }
+    arguments.extend(
+        ordered_parameters(operation)
+            .into_iter()
+            .filter(|parameter| !parameter.required)
+            .map(|parameter| {
+                let name = python_identifier(&parameter.name);
+                if parameter.location == ParameterLocation::Path {
+                    name
+                } else if parameter.required {
+                    ["json.dumps(", name.as_str(), ")"].concat()
+                } else {
+                    [
+                        "None if ",
+                        name.as_str(),
+                        " is None else json.dumps(",
+                        name.as_str(),
+                        ")",
+                    ]
+                    .concat()
+                }
+            }),
+    );
     arguments.join(", ")
 }
 
@@ -164,12 +250,81 @@ fn ordered_parameters(operation: &Operation) -> Vec<&crate::Parameter> {
 fn python_schema_type(schema: &Schema) -> String {
     match schema {
         Schema::Reference(name) => type_identifier(name),
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => "bytes".to_string(),
         Schema::String { .. } => "str".to_string(),
         Schema::Integer { .. } => "int".to_string(),
         Schema::Number { .. } => "float".to_string(),
         Schema::Boolean => "bool".to_string(),
         Schema::Array(item) => ["list[", python_schema_type(item).as_str(), "]"].concat(),
         _ => "JsonValue".to_string(),
+    }
+}
+
+fn body_json_expression(body: &crate::RequestBody, variable: &str) -> String {
+    let Some(schema) = body.schema.as_ref() else {
+        return format!("json.dumps({variable})");
+    };
+    if body.content_type == "multipart/form-data" || body.content_type == "application/octet-stream"
+    {
+        return format!(
+            "json.dumps({variable}.model_dump(mode=\"python\") if hasattr({variable}, \"model_dump\") else {variable}, default=lambda value: list(value) if isinstance(value, bytes) else value)"
+        );
+    }
+    if python_schema_type(schema) == "JsonValue" {
+        format!("json.dumps({variable})")
+    } else if schema_requires_alias(schema) {
+        format!("{variable}.model_dump_json(by_alias=True)")
+    } else {
+        format!("{variable}.model_dump_json()")
+    }
+}
+
+fn schema_requires_alias(schema: &Schema) -> bool {
+    match schema {
+        Schema::Object { properties, .. } => properties.keys().any(|name| {
+            matches!(
+                python_identifier(name).as_str(),
+                "and_"
+                    | "as_"
+                    | "assert_"
+                    | "async_"
+                    | "await_"
+                    | "break_"
+                    | "case_"
+                    | "class_"
+                    | "continue_"
+                    | "def_"
+                    | "del_"
+                    | "elif_"
+                    | "else_"
+                    | "except_"
+                    | "finally_"
+                    | "for_"
+                    | "from_"
+                    | "global_"
+                    | "if_"
+                    | "import_"
+                    | "in_"
+                    | "is_"
+                    | "lambda_"
+                    | "match_"
+                    | "none_"
+                    | "nonlocal_"
+                    | "not_"
+                    | "or_"
+                    | "pass_"
+                    | "raise_"
+                    | "return_"
+                    | "try_"
+                    | "while_"
+                    | "with_"
+                    | "yield_"
+            )
+        }),
+        Schema::AllOf(parts) => parts.iter().any(schema_requires_alias),
+        _ => false,
     }
 }
 
@@ -331,6 +486,9 @@ fn native_rust_schema_type(schema: &Schema, crate_name: &str) -> String {
             type_identifier(name),
         ]
         .concat(),
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => "Vec<u8>".to_string(),
         Schema::String { .. } => "String".to_string(),
         Schema::Integer { .. } => "i64".to_string(),
         Schema::Number { .. } => "f64".to_string(),

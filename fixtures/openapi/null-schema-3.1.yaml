@@ -1,0 +1,25 @@
+openapi: 3.1.0
+info:
+  title: Null schema regression
+  version: 1.0.0
+paths:
+  /nullable:
+    get:
+      operationId: getNullable
+      responses:
+        '200':
+          description: Nullable response
+          content:
+            application/json:
+              schema:
+                type: [string, null]
+  /null:
+    post:
+      operationId: createNull
+      responses:
+        '201':
+          description: Null response
+          content:
+            application/json:
+              schema:
+                type: 'null'

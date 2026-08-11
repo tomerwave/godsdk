@@ -403,7 +403,7 @@ fn response_type(operation: &Operation, spec: &ApiIr) -> TokenStream {
         .find(|response| response.status.starts_with('2') && response.schema.is_some())
         .and_then(|response| response.schema.as_ref())
         .map(|schema| {
-            let inline = matches!(schema, Schema::TypedEnum { .. })
+            let inline = matches!(schema, Schema::TypedEnum { .. } | Schema::Const { .. })
                 .then(|| inline_response_type_name(operation));
             schema_tokens_with_inline(schema, spec, inline.as_ref())
         })
@@ -440,6 +440,7 @@ fn schema_tokens_with_inline(
         Schema::TypedEnum { base, .. } => {
             inline.map_or_else(|| schema_tokens(base, spec), |ident| quote! { #ident })
         }
+        Schema::Const { base, .. } => schema_tokens(base, spec),
         Schema::Null => quote! { () },
         Schema::Array(item) => {
             let item = schema_tokens(item, spec);

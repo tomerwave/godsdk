@@ -37,6 +37,9 @@ fn model_tokens(name: &str, schema: &Schema, spec: &ApiIr) -> TokenStream {
     let body = match schema {
         Schema::Enum(values) => render_enum(&ident, values),
         Schema::TypedEnum { base, values } => render_typed_enum(&ident, base, values),
+        Schema::Const { base, value } => {
+            render_typed_enum(&ident, base, std::slice::from_ref(value))
+        }
         Schema::OneOf(variants) | Schema::AnyOf(variants) => render_union(&ident, variants),
         Schema::Object { .. } | Schema::AllOf(_) => render_object(&ident, schema, spec),
         Schema::Reference(reference) => {
@@ -215,6 +218,7 @@ fn schema_tokens(schema: &Schema) -> TokenStream {
             quote! { serde_json::Value }
         }
         Schema::TypedEnum { base, .. } => schema_tokens(base),
+        Schema::Const { base, .. } => schema_tokens(base),
     }
 }
 

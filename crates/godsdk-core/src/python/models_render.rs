@@ -91,6 +91,7 @@ fn alias_lines(name: &str, schema: &Schema) -> Option<Vec<String>> {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        Schema::Const { value, .. } => format!("Literal[{value}]"),
         Schema::OneOf(values) | Schema::AnyOf(values) => values
             .iter()
             .map(python_type)
@@ -195,6 +196,7 @@ fn python_type(schema: &Schema) -> String {
             "]",
         ]
         .concat(),
+        Schema::Const { value, .. } => ["Literal[", &value.to_string(), "]"].concat(),
         Schema::Nullable(inner) => [python_type(inner), " | None".to_string()].concat(),
         Schema::OneOf(values) | Schema::AnyOf(values) | Schema::AllOf(values) => values
             .iter()

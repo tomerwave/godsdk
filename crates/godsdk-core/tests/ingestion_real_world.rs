@@ -47,6 +47,17 @@ fn preserves_untyped_json_schemas_as_explicit_any_values() {
 }
 
 #[test]
+fn preserves_const_schema_values() {
+    let spec = parse("const-schema-3.1.yaml");
+    assert!(
+        matches!(spec.schemas.get("Version"), Some(Schema::Const { value, .. }) if value == &serde_json::json!(1))
+    );
+    assert!(
+        matches!(&spec.operations[0].responses[0].schema, Some(Schema::Const { value, .. }) if value == &serde_json::json!("ok"))
+    );
+}
+
+#[test]
 fn preserves_typed_non_string_enums() {
     assert!(parse("typed-enum-3.1.yaml").operations[0].parameters.iter().any(|parameter| matches!(&parameter.schema, Schema::TypedEnum { base, values } if matches!(base.as_ref(), Schema::Integer { .. }) && values.len() == 3)));
 }

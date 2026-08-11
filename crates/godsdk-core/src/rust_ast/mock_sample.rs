@@ -64,6 +64,7 @@ fn sample_schema(schema: &Schema, spec: &ApiIr, depth: usize) -> Value {
             .first()
             .map_or(Value::Null, |value| Value::String(value.clone())),
         Schema::TypedEnum { values, .. } => values.first().cloned().unwrap_or(Value::Null),
+        Schema::Const { value, .. } => value.clone(),
         Schema::Reference(name) => spec
             .schemas
             .get(name)

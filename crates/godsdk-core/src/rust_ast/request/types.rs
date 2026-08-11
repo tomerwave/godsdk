@@ -21,6 +21,10 @@ pub(super) fn parameter_type(
             || parameter_type(base, spec, None),
             |ident| quote! { #ident },
         ),
+        Schema::Const { base, .. } => inline.map_or_else(
+            || parameter_type(base, spec, None),
+            |ident| quote! { #ident },
+        ),
         Schema::Reference(name) if spec.schemas.contains_key(name) => {
             let name = format_ident!("{}", rust_type_name(name));
             quote! { #name }

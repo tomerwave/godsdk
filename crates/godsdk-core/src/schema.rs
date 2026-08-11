@@ -25,6 +25,10 @@ pub enum Schema {
         base: Box<Schema>,
         values: Vec<serde_json::Value>,
     },
+    Const {
+        base: Box<Schema>,
+        value: serde_json::Value,
+    },
     Reference(String),
     Nullable(Box<Schema>),
     OneOf(Vec<Schema>),
@@ -56,6 +60,13 @@ fn schema_from_non_reference(
     object: &serde_json::Map<String, serde_json::Value>,
     path: &str,
 ) -> Result<Schema, crate::IngestionError> {
+    const_schema(object, path)?.map_or_else(|| schema_from_non_const(object, path), Ok)
+}
+
+fn schema_from_non_const(
+    object: &serde_json::Map<String, serde_json::Value>,
+    path: &str,
+) -> Result<Schema, crate::IngestionError> {
     if let Some(schema) = composition_schema(object, path)? {
         return Ok(schema);
     }
@@ -63,6 +74,22 @@ fn schema_from_non_reference(
         return Ok(schema);
     }
     typed_schema(object, path)
+}
+
+fn const_schema(
+    object: &serde_json::Map<String, serde_json::Value>,
+    path: &str,
+) -> Result<Option<Schema>, crate::IngestionError> {
+    let Some(value) = object.get("const") else {
+        return Ok(None);
+    };
+    let mut base_object = object.clone();
+    base_object.remove("const");
+    let base = schema_from_non_reference(&base_object, path)?;
+    Ok(Some(Schema::Const {
+        base: Box::new(base),
+        value: value.clone(),
+    }))
 }
 
 fn composition_schema(

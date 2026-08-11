@@ -170,6 +170,7 @@ fn zod_schema(schema: &Schema, spec: &ApiIr) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        Schema::Const { value, .. } => format!("z.literal({value})"),
         Schema::Reference(name) => format!("z.lazy(() => {name}Schema)"),
         Schema::Nullable(inner) => format!("{}.nullable()", zod_schema(inner, spec)),
         Schema::OneOf(values) | Schema::AnyOf(values) => format!(

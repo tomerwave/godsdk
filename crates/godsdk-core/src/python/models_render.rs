@@ -9,8 +9,8 @@ pub(super) fn render_models(spec: &ApiIr) -> String {
         "from __future__ import annotations".to_string(),
         String::new(),
         "from enum import Enum".to_string(),
-        "from typing import TypeAlias".to_string(),
-        "from pydantic import BaseModel, ConfigDict".to_string(),
+        "from typing import Literal, TypeAlias".to_string(),
+        "from pydantic import BaseModel, ConfigDict, Field".to_string(),
         String::new(),
         "JsonValue: TypeAlias = None | bool | int | float | str | list[\"JsonValue\"] | dict[str, \"JsonValue\"]".to_string(),
         String::new(),
@@ -54,49 +54,95 @@ fn operation_request_name(operation: &Operation) -> String {
 }
 
 fn model_lines(name: &str, schema: &Schema, spec: &ApiIr) -> Vec<String> {
-    if let Schema::Enum(values) = schema {
-        let mut lines = vec![["class ", name, "(str, Enum):"].concat()];
-        lines.extend(values.iter().map(|value| {
-            [
-                "    ".to_string(),
-                enum_identifier(value),
-                " = ".to_string(),
-                python_string_literal(value),
-            ]
-            .concat()
-        }));
-        lines.push(String::new());
+    if let Some(lines) = alias_lines(name, schema) {
         return lines;
     }
+    if let Some(lines) = enum_lines(name, schema) {
+        return lines;
+    }
+    object_model_lines(name, schema, spec)
+}
+
+fn enum_lines(name: &str, schema: &Schema) -> Option<Vec<String>> {
+    let Schema::Enum(values) = schema else {
+        return None;
+    };
+    let mut lines = vec![["class ", name, "(str, Enum):"].concat()];
+    lines.extend(values.iter().map(|value| {
+        [
+            "    ".to_string(),
+            enum_identifier(value),
+            " = ".to_string(),
+            python_string_literal(value),
+        ]
+        .concat()
+    }));
+    lines.push(String::new());
+    Some(lines)
+}
+
+fn alias_lines(name: &str, schema: &Schema) -> Option<Vec<String>> {
+    let expression = match schema {
+        Schema::TypedEnum { values, .. } => format!(
+            "Literal[{}]",
+            values
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Schema::OneOf(values) | Schema::AnyOf(values) => values
+            .iter()
+            .map(python_type)
+            .collect::<Vec<_>>()
+            .join(" | "),
+        Schema::String { .. }
+        | Schema::Integer { .. }
+        | Schema::Number { .. }
+        | Schema::Boolean
+        | Schema::Null
+        | Schema::Array(_)
+        | Schema::Reference(_)
+        | Schema::Nullable(_) => python_type(schema),
+        _ => return None,
+    };
+    Some(vec![
+        [name, ": TypeAlias = ", &expression].concat(),
+        String::new(),
+    ])
+}
+
+fn object_model_lines(name: &str, schema: &Schema, spec: &ApiIr) -> Vec<String> {
     let mut lines = vec![
         ["class ", name, "(BaseModel):"].concat(),
-        "    model_config = ConfigDict(extra=\"forbid\")".to_string(),
+        "    model_config = ConfigDict(extra=\"forbid\", populate_by_name=True)".to_string(),
     ];
-    lines.extend(object_fields(schema, spec).into_iter().map(
-        |(property, property_schema, required)| {
-            let annotation = python_type(&property_schema);
-            if required {
-                [
-                    "    ".to_string(),
-                    python_identifier(&property),
-                    ": ".to_string(),
-                    annotation,
-                ]
-                .concat()
-            } else {
-                [
-                    "    ".to_string(),
-                    python_identifier(&property),
-                    ": ".to_string(),
-                    annotation,
-                    " | None = None".to_string(),
-                ]
-                .concat()
-            }
-        },
-    ));
+    lines.extend(object_fields(schema, spec).into_iter().map(render_field));
     lines.push(String::new());
     lines
+}
+
+fn render_field((property, property_schema, required): (String, Schema, bool)) -> String {
+    let identifier = python_identifier(&property);
+    let annotation = python_type(&property_schema);
+    let field = (identifier != property).then(|| format!("Field(alias={property:?})"));
+    let suffix = field.as_deref().map_or_else(
+        || {
+            if required {
+                String::new()
+            } else {
+                " | None = None".to_string()
+            }
+        },
+        |field| {
+            if required {
+                format!(" = {field}")
+            } else {
+                format!(" | None = {field}")
+            }
+        },
+    );
+    ["    ", &identifier, ": ", &annotation, &suffix].concat()
 }
 
 fn object_fields(schema: &Schema, spec: &ApiIr) -> Vec<(String, Schema, bool)> {
@@ -124,6 +170,10 @@ fn object_fields(schema: &Schema, spec: &ApiIr) -> Vec<(String, Schema, bool)> {
 
 fn python_type(schema: &Schema) -> String {
     match schema {
+        Schema::Any => "JsonValue".to_string(),
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => "bytes".to_string(),
         Schema::String { .. } => "str".to_string(),
         Schema::Integer { .. } => "int".to_string(),
         Schema::Number { .. } => "float".to_string(),
@@ -134,6 +184,17 @@ fn python_type(schema: &Schema) -> String {
         Schema::Enum(_) | Schema::Reference(_) => {
             schema_model_name(schema).unwrap_or_else(|| "str".to_string())
         }
+        Schema::TypedEnum { values, .. } => [
+            "Literal[",
+            values
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+                .as_str(),
+            "]",
+        ]
+        .concat(),
         Schema::Nullable(inner) => [python_type(inner), " | None".to_string()].concat(),
         Schema::OneOf(values) | Schema::AnyOf(values) | Schema::AllOf(values) => values
             .iter()
@@ -144,7 +205,7 @@ fn python_type(schema: &Schema) -> String {
 }
 
 fn enum_identifier(value: &str) -> String {
-    type_identifier(value).to_ascii_uppercase()
+    python_identifier(value).to_ascii_uppercase()
 }
 
 fn python_string_literal(value: &str) -> String {

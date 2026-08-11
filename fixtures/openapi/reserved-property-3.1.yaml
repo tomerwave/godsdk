@@ -1,0 +1,23 @@
+openapi: 3.1.0
+info:
+  title: Reserved property regression
+  version: 1.0.0
+paths:
+  /resources:
+    get:
+      operationId: listResources
+      responses:
+        '200':
+          description: Resources
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Resource'
+components:
+  schemas:
+    Resource:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string

@@ -6,11 +6,18 @@ use super::{
     schema_type_name, ts_identifier, type_identifier,
 };
 
+fn schema_validator_name(schema: &Schema, spec: &ApiIr) -> String {
+    match schema {
+        Schema::Reference(name) if spec.schemas.contains_key(name) => format!("{name}Schema"),
+        _ => "NativeValueSchema".to_string(),
+    }
+}
+
 pub(super) fn render_operation(operation: &Operation, _spec: &ApiIr) -> String {
     let method = ts_identifier(&operation.operation_id);
-    let parameters = public_parameters(operation);
-    let arguments = public_arguments(operation);
-    let (return_type, success, error_handling) = public_result(operation);
+    let parameters = public_parameters(operation, _spec);
+    let arguments = public_arguments(operation, _spec);
+    let (return_type, success, error_handling) = public_result(operation, _spec);
     CodeWriter::from_parts([
         "  async ".to_string(),
         method.clone(),
@@ -31,55 +38,111 @@ pub(super) fn render_operation(operation: &Operation, _spec: &ApiIr) -> String {
     ])
 }
 
-fn public_parameters(operation: &Operation) -> String {
+fn public_parameters(operation: &Operation, spec: &ApiIr) -> String {
     let mut parameters = Vec::new();
-    if let Some(body) = operation.request_body_details.as_ref() {
+    if let Some(body) = operation
+        .request_body_details
+        .as_ref()
+        .filter(|body| body.required)
+    {
         let ty = body
             .schema
             .as_ref()
-            .map(schema_type_name)
+            .map(|schema| schema_type_name(schema, spec))
             .unwrap_or_else(|| "NativeValue".to_string());
-        parameters.push(if body.required {
-            format!("requestBody: {ty}")
-        } else {
-            format!("requestBody?: {ty}")
-        });
+        parameters.push(format!("requestBody: {ty}"));
     }
-    parameters.extend(ordered_parameters(operation).into_iter().map(|parameter| {
-        let name = ts_identifier(&parameter.name);
-        let ty = schema_type_name(&parameter.schema);
-        if parameter.required {
-            format!("{name}: {ty}")
-        } else {
-            format!("{name}?: {ty}")
-        }
-    }));
+    parameters.extend(
+        ordered_parameters(operation)
+            .into_iter()
+            .filter(|parameter| parameter.required)
+            .map(|parameter| {
+                let name = ts_identifier(&parameter.name);
+                let ty = schema_type_name(&parameter.schema, spec);
+                format!("{name}: {ty}")
+            }),
+    );
+    if let Some(body) = operation
+        .request_body_details
+        .as_ref()
+        .filter(|body| !body.required)
+    {
+        let ty = body
+            .schema
+            .as_ref()
+            .map(|schema| schema_type_name(schema, spec))
+            .unwrap_or_else(|| "NativeValue".to_string());
+        parameters.push(format!("requestBody?: {ty}"));
+    }
+    parameters.extend(
+        ordered_parameters(operation)
+            .into_iter()
+            .filter(|parameter| !parameter.required)
+            .map(|parameter| {
+                let name = ts_identifier(&parameter.name);
+                let ty = schema_type_name(&parameter.schema, spec);
+                format!("{name}?: {ty}")
+            }),
+    );
     parameters.join(", ")
 }
 
-fn public_arguments(operation: &Operation) -> String {
+fn public_arguments(operation: &Operation, spec: &ApiIr) -> String {
     let mut arguments = Vec::new();
-    if let Some(body) = operation.request_body_details.as_ref() {
+    if let Some(body) = operation
+        .request_body_details
+        .as_ref()
+        .filter(|body| body.required)
+    {
         let schema = body
             .schema
             .as_ref()
-            .map(schema_type_name)
-            .unwrap_or_else(|| "NativeValue".to_string());
-        arguments.push(if body.required {
-            format!("JSON.stringify({schema}Schema.parse(requestBody))")
-        } else {
-            format!("requestBody === undefined ? undefined : JSON.stringify({schema}Schema.parse(requestBody))")
-        });
+            .map(|schema| schema_validator_name(schema, spec))
+            .unwrap_or_else(|| "NativeValueSchema".to_string());
+        arguments.push(native_json_argument(body, &schema, "requestBody"));
     }
     arguments.extend(
         ordered_parameters(operation)
             .into_iter()
+            .filter(|parameter| parameter.required)
+            .map(|parameter| ts_identifier(&parameter.name)),
+    );
+    if let Some(body) = operation
+        .request_body_details
+        .as_ref()
+        .filter(|body| !body.required)
+    {
+        let schema = body
+            .schema
+            .as_ref()
+            .map(|schema| schema_validator_name(schema, spec))
+            .unwrap_or_else(|| "NativeValueSchema".to_string());
+        arguments.push(format!(
+            "requestBody === undefined ? undefined : {}",
+            native_json_argument(body, &schema, "requestBody")
+        ));
+    }
+    arguments.extend(
+        ordered_parameters(operation)
+            .into_iter()
+            .filter(|parameter| !parameter.required)
             .map(|parameter| ts_identifier(&parameter.name)),
     );
     arguments.join(", ")
 }
 
-fn public_result(operation: &Operation) -> (String, String, String) {
+fn native_json_argument(body: &crate::RequestBody, schema: &str, variable: &str) -> String {
+    if body.content_type == "multipart/form-data" || body.content_type == "application/octet-stream"
+    {
+        format!(
+            "JSON.stringify({schema}.parse({variable}), (_key, value) => value instanceof Uint8Array ? Array.from(value) : value)"
+        )
+    } else {
+        format!("JSON.stringify({schema}.parse({variable}))")
+    }
+}
+
+fn public_result(operation: &Operation, spec: &ApiIr) -> (String, String, String) {
     let response = operation
         .responses
         .iter()
@@ -87,14 +150,16 @@ fn public_result(operation: &Operation) -> (String, String, String) {
         .and_then(|response| response.schema.as_ref());
     let return_type = response
         .map(|response| {
-            schema_model_name(response).unwrap_or_else(|| operation_response_name(operation))
+            schema_model_name(response, spec)
+                .map(|name| super::type_alias_name(&name))
+                .unwrap_or_else(|| operation_response_name(operation))
         })
         .unwrap_or_else(|| "void".to_string());
     let success = response.map_or_else(
         || "    return;\n".to_string(),
         |response| {
-            let model =
-                schema_model_name(response).unwrap_or_else(|| operation_response_name(operation));
+            let model = schema_model_name(response, spec)
+                .unwrap_or_else(|| operation_response_name(operation));
             format!("    return {model}Schema.parse(result.value);\n")
         },
     );
@@ -267,7 +332,11 @@ fn native_error_arm(response: &crate::Response, error_type: &str) -> Option<Stri
 fn native_rust_schema_type(schema: &Schema, crate_name: &str) -> String {
     match schema {
         Schema::Reference(name) => format!("{crate_name}::{}", type_identifier(name)),
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => "Vec<u8>".to_string(),
         Schema::String { .. } => "String".to_string(),
+        Schema::TypedEnum { base, .. } => native_rust_schema_type(base, crate_name),
         Schema::Integer { .. } => "i64".to_string(),
         Schema::Number { .. } => "f64".to_string(),
         Schema::Boolean => "bool".to_string(),

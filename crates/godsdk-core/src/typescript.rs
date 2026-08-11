@@ -6,9 +6,10 @@ mod native_render;
 mod operations_render;
 #[path = "typescript/schemas.rs"]
 mod schemas;
+#[path = "typescript/test_render.rs"]
+mod test_render;
 
 use super::code_writer::CodeWriter;
-use super::rust_ast::{mock_request_body, mock_success_body};
 use super::{ApiIr, Operation, Schema};
 use identifiers::{slug, ts_identifier};
 use native_render::{render_native_cargo, render_native_package, render_native_rust};
@@ -17,6 +18,7 @@ use schemas::{
     inline_request_schema, inline_success_schema, operation_request_name, operation_response_name,
     render_schemas, render_types, schema_model_name,
 };
+use test_render::{render_client_test, render_validation_test};
 
 pub(crate) fn render_typescript_files(spec: &ApiIr) -> Vec<(&'static str, String)> {
     vec![
@@ -108,7 +110,7 @@ fn render_errors(spec: &ApiIr) -> String {
         .operations
         .iter()
         .filter(|operation| has_error_responses(operation))
-        .map(render_error_contract)
+        .map(|operation| render_error_contract(operation, spec))
         .collect::<String>();
     CodeWriter::from_lines(error_file_lines(&imports, &contracts))
 }
@@ -160,7 +162,7 @@ fn has_error_responses(operation: &Operation) -> bool {
         .any(|response| !response.status.starts_with('2'))
 }
 
-fn render_error_contract(operation: &Operation) -> String {
+fn render_error_contract(operation: &Operation, spec: &ApiIr) -> String {
     let operation_name = type_identifier(&operation.operation_id);
     let name = format!("{operation_name}Error");
     let variants = operation
@@ -172,7 +174,7 @@ fn render_error_contract(operation: &Operation) -> String {
             let body_type = response
                 .schema
                 .as_ref()
-                .and_then(schema_model_name)
+                .and_then(|schema| schema_model_name(schema, spec))
                 .unwrap_or_else(|| "NativeValue".to_string());
             Some(vec![
                 format!("export class {operation_name}Status{status}Error extends {name} {{"),
@@ -197,7 +199,7 @@ fn render_error_contract(operation: &Operation) -> String {
             let constructor = response
                 .schema
                 .as_ref()
-                .and_then(schema_model_name)
+                .and_then(|schema| schema_model_name(schema, spec))
                 .map_or_else(|| format!("new {operation_name}Status{status}Error({status}, result.body)"), |model| {
                     format!("new {operation_name}Status{status}Error({status}, {model}Schema.parse(result.body))")
                 });
@@ -246,12 +248,12 @@ fn render_native_loader(spec: &ApiIr) -> String {
             format!(
                 "  {}({}): Promise<NativeResult>;\n",
                 ts_identifier(&operation.operation_id),
-                native_method_parameters(operation)
+                native_method_parameters(operation, spec)
             )
         })
         .collect::<String>();
     format!(
-        "import binding from \"../native/index.js\";\n\nexport type NativeValue = null | boolean | number | string | NativeValue[] | {{ [key: string]: NativeValue }};\nexport type NativeResult = {{ ok: true; value: NativeValue }} | {{ ok: false; status: number; body: NativeValue }};\n\nexport interface NativeClient {{\n{methods}}}\n\ninterface NativeBinding {{\n  NativeClient: new (baseUrl: string) => NativeClient;\n}}\n\nconst nativeBinding = binding as NativeBinding;\n\nexport function loadNative(baseUrl: string): NativeClient {{\n  return new nativeBinding.NativeClient(baseUrl);\n}}\n"
+        "import binding from \"../native/index.js\";\nimport * as z from \"zod\";\n\nexport type NativeValue = unknown;\nexport const NativeValueSchema = z.unknown();\nexport type NativeResult = {{ ok: true; value: NativeValue }} | {{ ok: false; status: number; body: NativeValue }};\n\nexport interface NativeClient {{\n{methods}}}\n\ninterface NativeBinding {{\n  NativeClient: new (baseUrl: string) => NativeClient;\n}}\n\nconst nativeBinding = binding as NativeBinding;\n\nexport function loadNative(baseUrl: string) {{\n  return new nativeBinding.NativeClient(baseUrl);\n}}\n"
     )
 }
 
@@ -263,37 +265,59 @@ fn render_native_declaration(spec: &ApiIr) -> String {
             format!(
                 "  {}({}): Promise<NativeResult>;\n",
                 ts_identifier(&operation.operation_id),
-                native_method_parameters(operation)
+                native_method_parameters(operation, spec)
             )
         })
         .collect::<String>();
     format!(
-        "export type NativeValue = null | boolean | number | string | NativeValue[] | {{ [key: string]: NativeValue }};\nexport type NativeResult = {{ ok: true; value: NativeValue }} | {{ ok: false; status: number; body: NativeValue }};\n\nexport declare class NativeClient {{\n{methods}}}\n\ndeclare const binding: {{ NativeClient: typeof NativeClient }};\nexport default binding;\n"
+        "import type * as z from \"zod\";\nexport type NativeValue = unknown;\nexport declare const NativeValueSchema: z.ZodType<NativeValue>;\nexport type NativeResult = {{ ok: true; value: NativeValue }} | {{ ok: false; status: number; body: NativeValue }};\n\nexport declare class NativeClient {{\n{methods}}}\n\ndeclare const binding: {{ NativeClient: typeof NativeClient }};\nexport default binding;\n"
     )
 }
 
-fn native_method_parameters(operation: &Operation) -> String {
+fn native_method_parameters(operation: &Operation, spec: &ApiIr) -> String {
     let mut parameters = Vec::new();
-    if let Some(body) = operation.request_body_details.as_ref() {
-        parameters.push(if body.required {
-            "requestBody: string".to_string()
-        } else {
-            "requestBody?: string".to_string()
-        });
+    if operation
+        .request_body_details
+        .as_ref()
+        .is_some_and(|body| body.required)
+    {
+        parameters.push("requestBody: string".to_string());
     }
-    parameters.extend(ordered_parameters(operation).into_iter().map(|parameter| {
-        let name = ts_identifier(&parameter.name);
-        let ty = if parameter.location == super::ParameterLocation::Path {
-            "string".to_string()
-        } else {
-            schema_type_name(&parameter.schema)
-        };
-        if parameter.required {
-            format!("{name}: {ty}")
-        } else {
-            format!("{name}?: {ty}")
-        }
-    }));
+    parameters.extend(
+        ordered_parameters(operation)
+            .into_iter()
+            .filter(|parameter| parameter.required)
+            .map(|parameter| {
+                let name = ts_identifier(&parameter.name);
+                let ty = if parameter.location == super::ParameterLocation::Path {
+                    "string".to_string()
+                } else {
+                    native_schema_type_name(&parameter.schema, spec)
+                };
+                format!("{name}: {ty}")
+            }),
+    );
+    if operation
+        .request_body_details
+        .as_ref()
+        .is_some_and(|body| !body.required)
+    {
+        parameters.push("requestBody?: string".to_string());
+    }
+    parameters.extend(
+        ordered_parameters(operation)
+            .into_iter()
+            .filter(|parameter| !parameter.required)
+            .map(|parameter| {
+                let name = ts_identifier(&parameter.name);
+                let ty = if parameter.location == super::ParameterLocation::Path {
+                    "string".to_string()
+                } else {
+                    native_schema_type_name(&parameter.schema, spec)
+                };
+                format!("{name}?: {ty}")
+            }),
+    );
     parameters.join(", ")
 }
 
@@ -314,13 +338,13 @@ fn render_index_header(spec: &ApiIr) -> String {
     let response_names = spec
         .operations
         .iter()
-        .filter(|operation| inline_success_schema(operation).is_some())
+        .filter(|operation| inline_success_schema(operation, spec).is_some())
         .map(operation_response_name)
         .collect::<Vec<_>>();
     let request_names = spec
         .operations
         .iter()
-        .filter(|operation| inline_request_schema(operation).is_some())
+        .filter(|operation| inline_request_schema(operation, spec).is_some())
         .map(operation_request_name)
         .collect::<Vec<_>>();
     append_schema_imports(&mut imports, &response_names);
@@ -330,13 +354,20 @@ fn render_index_header(spec: &ApiIr) -> String {
     let mut type_names = spec.schemas.keys().cloned().collect::<Vec<_>>();
     type_names.extend(response_names);
     type_names.extend(request_names);
-    let types = type_names.join(", ");
+    let types = type_names
+        .iter()
+        .map(|name| type_alias_name(name))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
-        "import * as z from \"zod\";\nimport {{ loadNative, type NativeClient }} from \"./native.js\";\nimport type {{ {types} }} from \"./types.js\";\n{imports}\nexport * from \"./schemas.js\";\nexport * from \"./types.js\";\nexport * from \"./errors.js\";\n\nexport class Client {{\n  private readonly native: NativeClient;\n\n  constructor(baseUrl: string) {{\n    this.native = loadNative(baseUrl);\n  }}\n\n"
+        "import * as z from \"zod\";\nimport {{ loadNative, type NativeClient, type NativeValue, NativeValueSchema }} from \"./native.js\";\nimport type {{ {types} }} from \"./types.js\";\n{imports}\nexport * from \"./schemas.js\";\nexport * from \"./types.js\";\nexport * from \"./errors.js\";\n\nexport class Client {{\n  private readonly native: NativeClient;\n\n  constructor(baseUrl: string) {{\n    this.native = loadNative(baseUrl);\n  }}\n\n"
     )
 }
 
 fn append_schema_imports(imports: &mut String, names: &[String]) {
+    let mut names = names.to_vec();
+    names.sort();
+    names.dedup();
     for name in names {
         imports.push_str(&format!(
             "import {{ {name}Schema }} from \"./schemas.js\";\n"
@@ -364,15 +395,41 @@ fn render_index_methods(spec: &ApiIr) -> String {
         .collect()
 }
 
-fn schema_type_name(schema: &Schema) -> String {
+fn schema_type_name(schema: &Schema, spec: &ApiIr) -> String {
     match schema {
-        Schema::Reference(name) => name.clone(),
+        Schema::Reference(name) if spec.schemas.contains_key(name) => type_alias_name(name),
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => "Uint8Array".to_string(),
         Schema::String { .. } => "string".to_string(),
         Schema::Integer { .. } | Schema::Number { .. } => "number".to_string(),
         Schema::Boolean => "boolean".to_string(),
         Schema::Null => "null".to_string(),
-        Schema::Array(item) => format!("{}[]", schema_type_name(item)),
+        Schema::Array(item) => format!("{}[]", schema_type_name(item, spec)),
         _ => "NativeValue".to_string(),
+    }
+}
+
+pub(super) fn type_alias_name(name: &str) -> String {
+    if name.ends_with("Schema") {
+        format!("{name}Type")
+    } else {
+        name.to_string()
+    }
+}
+
+fn native_schema_type_name(schema: &Schema, spec: &ApiIr) -> String {
+    match schema {
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => "Uint8Array".to_string(),
+        Schema::String { .. } => "string".to_string(),
+        Schema::Integer { .. } | Schema::Number { .. } => "number".to_string(),
+        Schema::Boolean => "boolean".to_string(),
+        _ => {
+            let _ = spec;
+            "NativeValue".to_string()
+        }
     }
 }
 
@@ -388,51 +445,6 @@ fn ordered_parameters(operation: &Operation) -> Vec<&crate::Parameter> {
                 .filter(|parameter| !parameter.required),
         )
         .collect()
-}
-
-fn render_validation_test(spec: &ApiIr) -> String {
-    let Some(name) = spec.schemas.keys().next() else {
-        return "import { describe, it } from \"vitest\";\n\ndescribe(\"generated schemas\", () => { it(\"has no models\", () => {}); });\n".to_string();
-    };
-    format!(
-        "import {{ describe, expect, it }} from \"vitest\";\nimport {{ {name}Schema }} from \"../src/schemas.js\";\n\ndescribe(\"generated schemas\", () => {{\n  it(\"rejects invalid {name}\", () => {{\n    expect(() => {name}Schema.parse({{}})).toThrow();\n  }});\n}});\n"
-    )
-}
-
-fn render_client_test(spec: &ApiIr) -> String {
-    let Some(operation) = spec.operations.first() else {
-        return "import { describe, it } from \"vitest\";\n\ndescribe(\"generated client\", () => { it(\"has no operations\", () => {}); });\n".to_string();
-    };
-    let method = ts_identifier(&operation.operation_id);
-    let success_json =
-        String::from_utf8(mock_success_body(spec, operation)).unwrap_or_else(|_| "{}".to_string());
-    let mut arguments = Vec::new();
-    if operation.request_body_details.is_some() {
-        let request_json = String::from_utf8(mock_request_body(spec, operation))
-            .unwrap_or_else(|_| "null".to_string());
-        arguments.push(request_json);
-    }
-    arguments.extend(
-        ordered_parameters(operation)
-            .into_iter()
-            .map(test_parameter_argument)
-            .collect::<Vec<_>>(),
-    );
-    let arguments = arguments.join(", ");
-    format!(
-        "import {{ createServer }} from \"node:http\";\nimport {{ afterAll, beforeAll, describe, expect, it }} from \"vitest\";\nimport {{ Client }} from \"../src/index.js\";\n\nconst server = createServer((_request, response) => {{\n  response.writeHead(200, {{ \"content-type\": \"application/json\" }});\n  response.end(JSON.stringify({success_json}));\n}});\nlet baseUrl = \"\";\n\nbeforeAll(async () => {{\n  await new Promise<void>((resolve) => server.listen(0, \"127.0.0.1\", resolve));\n  const address = server.address();\n  if (address === null || typeof address === \"string\") throw new Error(\"mock server did not bind\");\n  baseUrl = `http://127.0.0.1:${{address.port}}`;\n}});\n\nafterAll(() => server.close());\n\ndescribe(\"generated native client\", () => {{\n  it(\"calls the Rust-backed local mock API\", async () => {{\n    const response = await new Client(baseUrl).{method}({arguments});\n    expect(response).toEqual({success_json});\n  }});\n}});\n"
-    )
-}
-
-fn test_parameter_argument(parameter: &crate::Parameter) -> String {
-    if !parameter.required {
-        return "undefined".to_string();
-    }
-    match parameter.schema {
-        Schema::Boolean => "true".to_string(),
-        Schema::Integer { .. } | Schema::Number { .. } => "1".to_string(),
-        _ => "\"example\"".to_string(),
-    }
 }
 
 fn render_readme(spec: &ApiIr) -> String {

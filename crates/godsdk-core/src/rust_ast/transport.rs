@@ -18,7 +18,7 @@ fn imports() -> TokenStream {
 
         pub(crate) struct HttpResponse {
             pub(crate) status: u16,
-            pub(crate) body: String,
+            pub(crate) body: Vec<u8>,
         }
 
         enum AttemptOutcome {
@@ -60,8 +60,8 @@ fn request_method() -> TokenStream {
         pub(crate) struct RequestOptions {
             pub(crate) query: Vec<(String, String)>,
             pub(crate) headers: Vec<(String, String)>,
-            pub(crate) body: Option<String>,
-            pub(crate) requirements: Option<&'static [&'static [AuthRequirement]]>,
+            pub(crate) body: Option<RequestBody>,
+            pub(crate) requirements: Option<Vec<Vec<AuthRequirement>>>,
         }
 
         impl Client {
@@ -108,7 +108,7 @@ fn build_request() -> TokenStream {
                 let request = apply_auth(
                     self.http.request(method.clone(), url.clone()),
                     &self.auth,
-                    options.requirements,
+                    options.requirements.as_deref(),
                 )?;
                 let request = options.query.iter().fold(request, |request, (name, value)| {
                     request.query(&[(name, value)])
@@ -116,8 +116,14 @@ fn build_request() -> TokenStream {
                 let request = options.headers.iter().fold(request, |request, (name, value)| {
                     request.header(name.clone(), value)
                 });
-                Ok(match options.body.as_deref() {
-                    Some(body) => request.body(body.to_string()),
+        Ok(match options.body.as_ref() {
+                    Some(RequestBody::Bytes { content_type, bytes }) => request
+                        .header(header::CONTENT_TYPE, *content_type)
+                        .body(bytes.clone()),
+                    Some(RequestBody::MultipartJson(bytes)) => {
+                        let form = multipart_form(bytes)?;
+                        request.multipart(form)
+                    }
                     None => request,
                 })
             }
@@ -188,8 +194,17 @@ fn handle_http_failure() -> TokenStream {
 }
 
 fn body_helpers() -> TokenStream {
+    let multipart = multipart_helpers();
     quote! {
-        async fn read_body(response: reqwest::Response, limit: usize) -> Result<String, SdkError> {
+        #[allow(dead_code)]
+        pub(crate) enum RequestBody {
+            Bytes { content_type: &'static str, bytes: Vec<u8> },
+            MultipartJson(Vec<u8>),
+        }
+
+        #multipart
+
+        async fn read_body(response: reqwest::Response, limit: usize) -> Result<Vec<u8>, SdkError> {
             let body = response.bytes().await.map_err(|error| {
                 if error.is_timeout() {
                     SdkError::Timeout
@@ -200,15 +215,48 @@ fn body_helpers() -> TokenStream {
             if body.len() > limit {
                 return Err(SdkError::ResponseTooLarge);
             }
-            String::from_utf8(body.to_vec()).map_err(|error| SdkError::Serialization(error.to_string()))
+            Ok(body.to_vec())
         }
 
-        async fn read_error_body(response: reqwest::Response, limit: usize) -> Result<String, SdkError> {
+        async fn read_error_body(response: reqwest::Response, limit: usize) -> Result<Vec<u8>, SdkError> {
             match read_body(response, limit).await {
                 Ok(body) => Ok(body),
-                Err(SdkError::ResponseTooLarge) => Ok("<response body omitted: limit exceeded>".to_string()),
+                Err(SdkError::ResponseTooLarge) => Ok(b"<response body omitted: limit exceeded>".to_vec()),
                 Err(error) => Err(error),
             }
+        }
+    }
+}
+
+fn multipart_helpers() -> TokenStream {
+    quote! {
+        fn multipart_form(bytes: &[u8]) -> Result<reqwest::multipart::Form, SdkError> {
+            let value: serde_json::Value = serde_json::from_slice(bytes)
+                .map_err(|error| SdkError::Serialization(error.to_string()))?;
+            let Some(object) = value.as_object() else {
+                return Err(SdkError::Serialization("multipart body must be an object".to_string()));
+            };
+            let mut form = reqwest::multipart::Form::new();
+            for (name, value) in object { form = form.part(name.clone(), multipart_part(value)); }
+            Ok(form)
+        }
+
+        fn multipart_part(value: &serde_json::Value) -> reqwest::multipart::Part {
+            match value {
+                serde_json::Value::Array(values) if is_byte_array(values) => reqwest::multipart::Part::bytes(byte_array(values)),
+                serde_json::Value::String(value) => reqwest::multipart::Part::text(value.clone()),
+                serde_json::Value::Bool(value) => reqwest::multipart::Part::text(value.to_string()),
+                serde_json::Value::Number(value) => reqwest::multipart::Part::text(value.to_string()),
+                other => reqwest::multipart::Part::text(other.to_string()),
+            }
+        }
+
+        fn is_byte_array(values: &[serde_json::Value]) -> bool {
+            values.iter().all(|value| value.as_u64().is_some_and(|value| value <= 255))
+        }
+
+        fn byte_array(values: &[serde_json::Value]) -> Vec<u8> {
+            values.iter().filter_map(serde_json::Value::as_u64).map(|value| value as u8).collect()
         }
     }
 }

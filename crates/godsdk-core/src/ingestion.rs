@@ -407,19 +407,52 @@ fn operation_id(
     path: &str,
     method_name: &str,
 ) -> Result<String, IngestionError> {
-    let operation_id =
-        operation
-            .operation_id
-            .clone()
-            .ok_or_else(|| IngestionError::MissingOperationId {
-                method: method_name.to_string(),
-                path: path.to_string(),
-            })?;
+    let operation_id = operation
+        .operation_id
+        .clone()
+        .unwrap_or_else(|| inferred_operation_id(method_name, path));
     if operation_ids.insert(operation_id.clone()) {
         Ok(operation_id)
     } else {
         Err(IngestionError::DuplicateOperationId { operation_id })
     }
+}
+
+fn inferred_operation_id(method_name: &str, path: &str) -> String {
+    let mut id = String::with_capacity(method_name.len() + path.len());
+    id.push_str(method_name);
+    path.split('/')
+        .filter_map(operation_segment)
+        .for_each(|segment| {
+            append_operation_segment(&mut id, segment);
+        });
+    if id == method_name {
+        id.push_str("Root");
+    }
+    id
+}
+
+fn operation_segment(segment: &str) -> Option<&str> {
+    (!segment.is_empty()).then(|| segment.trim_matches(['{', '}']))
+}
+
+fn append_operation_segment(id: &mut String, segment: &str) {
+    let mut uppercase = true;
+    for character in segment.chars() {
+        uppercase = append_operation_character(id, character, uppercase);
+    }
+}
+
+fn append_operation_character(id: &mut String, character: char, uppercase: bool) -> bool {
+    if !character.is_ascii_alphanumeric() {
+        return true;
+    }
+    id.push(if uppercase {
+        character.to_ascii_uppercase()
+    } else {
+        character
+    });
+    false
 }
 
 fn normalize_parameters(

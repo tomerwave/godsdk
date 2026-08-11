@@ -1,5 +1,9 @@
 # GodSDK
 
+<p align="center">
+  <img src="assets/godsdk-icon.svg" alt="GodSDK" width="180">
+</p>
+
 GodSDK is the technical SDK-generation tool in the Godsuite. It is planned as a Rust-based
 pipeline that turns OpenAPI or custom API specifications into one strongly typed Rust client
 core and ecosystem-native bindings.

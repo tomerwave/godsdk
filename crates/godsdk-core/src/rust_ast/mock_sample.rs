@@ -43,6 +43,7 @@ fn sample_schema(schema: &Schema, spec: &ApiIr, depth: usize) -> Value {
         return Value::Null;
     }
     match schema {
+        Schema::Any => Value::Null,
         Schema::String { .. } => Value::String("example".to_string()),
         Schema::Integer { .. } => Value::from(1),
         Schema::Number { .. } => Value::from(1.0),
@@ -62,6 +63,7 @@ fn sample_schema(schema: &Schema, spec: &ApiIr, depth: usize) -> Value {
         Schema::Enum(values) => values
             .first()
             .map_or(Value::Null, |value| Value::String(value.clone())),
+        Schema::TypedEnum { values, .. } => values.first().cloned().unwrap_or(Value::Null),
         Schema::Reference(name) => spec
             .schemas
             .get(name)

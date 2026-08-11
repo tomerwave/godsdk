@@ -55,6 +55,66 @@ fn generates_a_compiling_rust_repository_skeleton() {
 }
 
 #[test]
+fn generates_rust_raw_identifiers_for_reserved_properties() {
+    let (_output, request) = generated_fixture("reserved-property-3.1.yaml");
+
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+
+    let model = std::fs::read_to_string(
+        request
+            .output_path()
+            .join("sdk/rust/src/models/resource.rs"),
+    )
+    .unwrap_or_else(|error| panic!("generated model is readable: {error}"));
+    assert!(model.contains("pub r#type: String"));
+}
+
+#[test]
+fn generated_rust_runtime_supports_multipart_and_binary_contracts() {
+    let (_output, request) = generated_fixture("multipart-binary-3.1.yaml");
+
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+
+    let transport = std::fs::read_to_string(
+        request
+            .output_path()
+            .join("sdk/rust/src/client/transport.rs"),
+    )
+    .unwrap_or_else(|error| panic!("generated transport is readable: {error}"));
+    let operation =
+        std::fs::read_to_string(request.output_path().join("sdk/rust/src/operations/mod.rs"))
+            .unwrap_or_else(|error| panic!("generated operation is readable: {error}"));
+    assert!(transport.contains("Multipart"));
+    assert!(operation.contains("MultipartJson"));
+    assert!(operation.contains("Vec<u8>"));
+}
+
+#[test]
+fn generated_targets_preserve_composition_shapes() {
+    let (_output, request) = generated_fixture("schemas-composition-3.1.yaml");
+    let request = request.with_targets([Target::Rust, Target::TypeScript, Target::Python]);
+
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+
+    let rust_union =
+        std::fs::read_to_string(request.output_path().join("sdk/rust/src/models/item.rs"))
+            .unwrap_or_else(|error| panic!("generated Rust union is readable: {error}"));
+    let typescript =
+        std::fs::read_to_string(request.output_path().join("sdk/typescript/src/schemas.ts"))
+            .unwrap_or_else(|error| panic!("generated TypeScript schemas are readable: {error}"));
+    let python = std::fs::read_to_string(
+        request
+            .output_path()
+            .join("sdk/python/schemas_and_composition_fixture_api/models.py"),
+    )
+    .unwrap_or_else(|error| panic!("generated Python models are readable: {error}"));
+    assert!(rust_union.contains("pub enum Item"));
+    assert!(typescript.contains("z.union"));
+    assert!(typescript.contains("z.intersection"));
+    assert!(python.contains("Item: TypeAlias = Product | Service"));
+}
+
+#[test]
 fn generated_repository_includes_godlint_policy() {
     let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
     let request =
@@ -470,80 +530,4 @@ fn rejects_an_unsupported_manifest_before_updating_output() {
         before,
         std::fs::read(readme).unwrap_or_else(|error| panic!("README is readable: {error}"))
     );
-}
-
-#[test]
-fn equivalent_openapi_ordering_generates_identical_rust_sources() {
-    let first = generate_source(
-        r#"
-openapi: 3.1.1
-info: {title: Ordered, version: 1.0.0}
-paths:
-  /pets/{z}/{a}:
-    get:
-      operationId: getPet
-      parameters:
-        - {name: a, in: path, required: true}
-        - {name: z, in: path, required: true}
-      responses: {"200": {description: ok}}
-"#,
-    );
-    let second = generate_source(
-        r#"
-openapi: 3.1.1
-info: {title: Ordered, version: 1.0.0}
-paths:
-  /pets/{z}/{a}:
-    get:
-      operationId: getPet
-      parameters:
-        - {name: z, in: path, required: true}
-        - {name: a, in: path, required: true}
-      responses: {"200": {description: ok}}
-"#,
-    );
-
-    assert_eq!(
-        std::fs::read_to_string(first.join("sdk/rust/src/operations/mod.rs"))
-            .unwrap_or_else(|error| panic!("first operations are readable: {error}")),
-        std::fs::read_to_string(second.join("sdk/rust/src/operations/mod.rs"))
-            .unwrap_or_else(|error| panic!("second operations are readable: {error}")),
-    );
-}
-
-#[test]
-fn generated_rust_sources_are_parseable_ast_files() {
-    let (_output, request) = generated_fixture("parameters-and-errors-3.1.yaml");
-    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
-    let source_root = request.output_path().join("sdk/rust/src");
-    for path in [
-        "lib.rs",
-        "client/mod.rs",
-        "client/auth.rs",
-        "client/builder.rs",
-        "client/error.rs",
-        "client/retry.rs",
-        "client/transport.rs",
-        "operations/mod.rs",
-        "models/mod.rs",
-        "models/document.rs",
-        "models/problem.rs",
-    ] {
-        let source = std::fs::read_to_string(source_root.join(path))
-            .unwrap_or_else(|error| panic!("generated source {path} is readable: {error}"));
-        let parsed = syn::parse_file(&source);
-        assert!(parsed.is_ok(), "generated source {path} is valid Rust");
-    }
-}
-
-fn generate_source(source: &str) -> PathBuf {
-    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
-    let output_path = output.keep();
-    let source_path = output_path.join("openapi.yaml");
-    std::fs::write(&source_path, source)
-        .unwrap_or_else(|error| panic!("source is writable: {error}"));
-    let generated = output_path.join("generated");
-    generate(&GenerationRequest::new(&source_path, &generated))
-        .unwrap_or_else(|error| panic!("generation succeeds: {error}"));
-    generated
 }

@@ -69,7 +69,10 @@ pub(super) fn operation_body(args: OperationBodyArgs<'_>) -> TokenStream {
                 let body = response.body;
                 #decode
             } else {
-                Err(SdkError::Http { status: response.status, body: response.body })
+            Err(SdkError::Http {
+                status: response.status,
+                body: String::from_utf8_lossy(&response.body).into_owned(),
+            })
             }
         },
     }
@@ -112,7 +115,7 @@ pub(super) fn operation_helpers(
             Ok(headers)
         }
 
-        fn #body_helper(request: &#request_type) -> Result<Option<String>, SdkError> {
+        fn #body_helper(request: &#request_type) -> Result<Option<RequestBody>, SdkError> {
             #body_destructure
             Ok(#body)
         }
@@ -168,7 +171,12 @@ fn request_destructuring(
     let body_fields = operation
         .request_body_details
         .as_ref()
-        .filter(|body| body.content_type == "application/json")
+        .filter(|body| {
+            matches!(
+                body.content_type.as_str(),
+                "application/json" | "multipart/form-data" | "application/octet-stream"
+            )
+        })
         .map(|_| vec![format_ident!("request_body")])
         .unwrap_or_default();
     (
@@ -421,40 +429,70 @@ fn request_body_argument(
     let Some(request_body) = operation.request_body_details.as_ref() else {
         return quote! { None };
     };
-    if request_body.content_type != "application/json" {
-        return quote! { None };
-    }
     let body_type = request_body
         .schema
         .as_ref()
         .map(|schema| parameter_type(schema, spec))
         .unwrap_or_else(|| quote! { serde_json::Value });
     let name = format_ident!("request_body");
+    let content_type = literal(&request_body.content_type);
+    let constructor = request_body_constructor(&request_body.content_type, &content_type);
     if request_body.required {
         arguments.push(quote! { #name: #body_type });
+        let bytes = required_body_bytes(&request_body.content_type, &name);
         quote! {
-            Some(serde_json::to_string(&#name)
-                .map_err(|error| SdkError::Serialization(error.to_string()))?)
+            Some(#constructor(#bytes))
         }
     } else {
         arguments.push(quote! { #name: Option<#body_type> });
+        let bytes = optional_body_bytes(&request_body.content_type);
         quote! {
-            #name.as_ref().map(serde_json::to_string)
-                .transpose()
-                .map_err(|error| SdkError::Serialization(error.to_string()))?
+            #name.map(|value| #constructor(#bytes))
         }
+    }
+}
+
+fn request_body_constructor(content_type: &str, content_type_literal: &syn::LitStr) -> TokenStream {
+    if content_type == "multipart/form-data" {
+        quote! { RequestBody::MultipartJson }
+    } else {
+        quote! { |bytes| RequestBody::Bytes { content_type: #content_type_literal, bytes } }
+    }
+}
+
+fn required_body_bytes(content_type: &str, name: &syn::Ident) -> TokenStream {
+    if content_type == "application/octet-stream" {
+        quote! { #name }
+    } else {
+        quote! { serde_json::to_vec(&#name).map_err(|error| SdkError::Serialization(error.to_string()))? }
+    }
+}
+
+fn optional_body_bytes(content_type: &str) -> TokenStream {
+    if content_type == "application/octet-stream" {
+        quote! { value }
+    } else {
+        quote! { serde_json::to_vec(&value).map_err(|error| SdkError::Serialization(error.to_string()))? }
     }
 }
 
 fn parameter_type(schema: &Schema, spec: &ApiIr) -> TokenStream {
     match schema {
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => quote! { Vec<u8> },
         Schema::String { .. } => quote! { String },
         Schema::Integer { .. } => quote! { i64 },
         Schema::Number { .. } => quote! { f64 },
         Schema::Boolean => quote! { bool },
+        Schema::TypedEnum { base, .. } => parameter_type(base, spec),
         Schema::Reference(name) => {
-            let name = format_ident!("{}", rust_type_name(name));
-            quote! { #name }
+            if spec.schemas.contains_key(name) {
+                let name = format_ident!("{}", rust_type_name(name));
+                quote! { #name }
+            } else {
+                quote! { serde_json::Value }
+            }
         }
         Schema::Array(item) => {
             let item = parameter_type(item, spec);

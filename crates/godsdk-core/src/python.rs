@@ -116,7 +116,12 @@ fn errors(spec: &ApiIr) -> String {
         .filter(|operation| has_error_responses(operation))
         .flat_map(|operation| operation.responses.iter())
         .filter(|response| !response.status.starts_with('2'))
-        .filter_map(|response| response.schema.as_ref().and_then(schema_model_name))
+        .filter_map(|response| {
+            response
+                .schema
+                .as_ref()
+                .and_then(|schema| known_schema_model_name(schema, spec))
+        })
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .map(|name| format!("from .models import {name}"))
@@ -125,12 +130,12 @@ fn errors(spec: &ApiIr) -> String {
         .operations
         .iter()
         .filter(|operation| has_error_responses(operation))
-        .map(error_contract)
+        .map(|operation| error_contract(operation, spec))
         .collect::<String>();
     CodeWriter::from_lines(python_error_file_lines(&imports, &contracts))
 }
 
-fn error_contract(operation: &Operation) -> String {
+fn error_contract(operation: &Operation, spec: &ApiIr) -> String {
     let operation_name = type_identifier(&operation.operation_id);
     let name = format!("{operation_name}Error");
     let subclasses = operation
@@ -142,7 +147,7 @@ fn error_contract(operation: &Operation) -> String {
             let body_type = response
                 .schema
                 .as_ref()
-                .and_then(schema_model_name)
+                .and_then(|schema| known_schema_model_name(schema, spec))
                 .unwrap_or_else(|| "JsonValue".to_string());
             Some(vec![
                 format!("class {operation_name}Status{status}Error({name}):"),
@@ -161,7 +166,7 @@ fn error_contract(operation: &Operation) -> String {
             let constructor = response
                 .schema
                 .as_ref()
-                .and_then(schema_model_name)
+                .and_then(|schema| known_schema_model_name(schema, spec))
                 .map_or_else(
                     || format!("{operation_name}Status{status}Error(status, body)"),
                     |model| {
@@ -411,6 +416,10 @@ fn schema_model_name(schema: &Schema) -> Option<String> {
     }
 }
 
+fn known_schema_model_name(schema: &Schema, spec: &ApiIr) -> Option<String> {
+    schema_model_name(schema).filter(|name| spec.schemas.contains_key(name))
+}
+
 fn inline_success_schema(operation: &Operation) -> Option<&Schema> {
     operation
         .responses
@@ -457,8 +466,18 @@ fn python_identifier(value: &str) -> String {
     {
         output.insert(0, '_');
     }
+    if PYTHON_KEYWORDS.contains(&output.as_str()) {
+        output.push('_');
+    }
     output
 }
+
+const PYTHON_KEYWORDS: &[&str] = &[
+    "and", "as", "assert", "async", "await", "break", "case", "class", "continue", "def", "del",
+    "elif", "else", "except", "False", "finally", "for", "from", "global", "if", "import", "in",
+    "is", "lambda", "match", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True",
+    "try", "while", "with", "yield",
+];
 
 fn slug(value: &str) -> String {
     value

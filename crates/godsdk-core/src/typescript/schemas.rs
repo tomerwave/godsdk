@@ -1,4 +1,5 @@
 use super::identifiers::{ts_property, type_identifier};
+use super::type_alias_name;
 use crate::code_writer::CodeWriter;
 use crate::{ApiIr, Operation, Schema};
 
@@ -11,14 +12,14 @@ pub(super) fn render_schemas(spec: &ApiIr) -> String {
         ));
     }
     for operation in &spec.operations {
-        if let Some(schema) = inline_success_schema(operation) {
+        if let Some(schema) = inline_success_schema(operation, spec) {
             declarations.push(format!(
                 "export const {}Schema = {};",
                 operation_response_name(operation),
                 zod_schema(schema, spec)
             ));
         }
-        if let Some(schema) = inline_request_schema(operation) {
+        if let Some(schema) = inline_request_schema(operation, spec) {
             declarations.push(format!(
                 "export const {}Schema = {};",
                 operation_request_name(operation),
@@ -36,61 +37,100 @@ pub(super) fn render_schemas(spec: &ApiIr) -> String {
 }
 
 pub(super) fn render_types(spec: &ApiIr) -> String {
-    let schemas = spec
-        .schemas
-        .keys()
-        .map(|name| format!("{name}Schema"))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let schema_names = schema_names(spec);
+    let schemas = schema_names.join(", ");
     let mut lines = vec![
         "import type * as z from \"zod\";".to_string(),
         format!("import {{ {schemas} }} from \"./schemas.js\";"),
         String::new(),
     ];
-    for name in spec.schemas.keys() {
-        lines.push(format!(
-            "export type {name} = z.infer<typeof {name}Schema>;"
-        ));
-    }
-    for operation in &spec.operations {
-        if inline_success_schema(operation).is_some() {
-            let name = operation_response_name(operation);
-            lines.push(format!(
-                "export type {name} = z.infer<typeof {name}Schema>;"
-            ));
-        }
-        if inline_request_schema(operation).is_some() {
-            let name = operation_request_name(operation);
-            lines.push(format!(
-                "export type {name} = z.infer<typeof {name}Schema>;"
-            ));
-        }
-    }
+    lines.extend(type_alias_lines(spec));
     CodeWriter::from_lines(lines)
 }
 
-pub(super) fn schema_model_name(schema: &Schema) -> Option<String> {
+fn schema_names(spec: &ApiIr) -> Vec<String> {
+    let mut names = spec
+        .schemas
+        .keys()
+        .map(|name| format!("{name}Schema"))
+        .collect::<Vec<_>>();
+    names.extend(
+        spec.operations
+            .iter()
+            .flat_map(|operation| {
+                [
+                    inline_success_schema(operation, spec)
+                        .is_some()
+                        .then(|| operation_response_name(operation)),
+                    inline_request_schema(operation, spec)
+                        .is_some()
+                        .then(|| operation_request_name(operation)),
+                ]
+            })
+            .flatten()
+            .map(|name| format!("{name}Schema")),
+    );
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn type_alias_lines(spec: &ApiIr) -> Vec<String> {
+    let mut lines = Vec::new();
+    for name in spec.schemas.keys() {
+        lines.push(format!(
+            "export type {} = z.infer<typeof {name}Schema>;",
+            type_alias_name(name)
+        ));
+    }
+    for operation in &spec.operations {
+        for name in [
+            inline_success_schema(operation, spec)
+                .is_some()
+                .then(|| operation_response_name(operation)),
+            inline_request_schema(operation, spec)
+                .is_some()
+                .then(|| operation_request_name(operation)),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            lines.push(format!(
+                "export type {name} = z.infer<typeof {name}Schema>;"
+            ));
+        }
+    }
+    lines
+}
+
+pub(super) fn schema_model_name(schema: &Schema, spec: &ApiIr) -> Option<String> {
     match schema {
-        Schema::Reference(name) => Some(name.clone()),
+        Schema::Reference(name) if spec.schemas.contains_key(name) => Some(name.clone()),
         _ => None,
     }
 }
 
-pub(super) fn inline_success_schema(operation: &Operation) -> Option<&Schema> {
+pub(super) fn inline_success_schema<'a>(
+    operation: &'a Operation,
+    spec: &ApiIr,
+) -> Option<&'a Schema> {
     operation
         .responses
         .iter()
         .find(|response| response.status.starts_with('2'))
         .and_then(|response| response.schema.as_ref())
-        .filter(|schema| schema_model_name(schema).is_none())
+        .filter(|schema| schema_model_name(schema, spec).is_none())
 }
 
-pub(super) fn inline_request_schema(operation: &Operation) -> Option<&Schema> {
+pub(super) fn inline_request_schema<'a>(
+    operation: &'a Operation,
+    spec: &ApiIr,
+) -> Option<&'a Schema> {
     operation
         .request_body_details
         .as_ref()
         .and_then(|body| body.schema.as_ref())
-        .filter(|schema| schema_model_name(schema).is_none())
+        .filter(|schema| schema_model_name(schema, spec).is_none())
 }
 
 pub(super) fn operation_request_name(operation: &Operation) -> String {
@@ -103,6 +143,10 @@ pub(super) fn operation_response_name(operation: &Operation) -> String {
 
 fn zod_schema(schema: &Schema, spec: &ApiIr) -> String {
     match schema {
+        Schema::Any => "z.unknown()".to_string(),
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => "z.instanceof(Uint8Array)".to_string(),
         Schema::String { .. } => "z.string()".to_string(),
         Schema::Integer { .. } => "z.number().int()".to_string(),
         Schema::Number { .. } => "z.number()".to_string(),
@@ -115,6 +159,14 @@ fn zod_schema(schema: &Schema, spec: &ApiIr) -> String {
             values
                 .iter()
                 .map(|value| format!("{value:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Schema::TypedEnum { values, .. } => format!(
+            "z.union([{}])",
+            values
+                .iter()
+                .map(|value| format!("z.literal({value})"))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),

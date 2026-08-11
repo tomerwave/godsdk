@@ -4,16 +4,19 @@ mod identifiers;
 mod native_render;
 #[path = "typescript/operations_render.rs"]
 mod operations_render;
+#[path = "typescript/readme_render.rs"]
+mod readme_render;
 #[path = "typescript/schemas.rs"]
 mod schemas;
 #[path = "typescript/test_render.rs"]
 mod test_render;
 
-use super::code_writer::CodeWriter;
+use super::code_writer::{CodeWriter, concatenate};
 use super::{ApiIr, Operation, Schema};
 use identifiers::{slug, ts_identifier};
 use native_render::{render_native_cargo, render_native_package, render_native_rust};
-use operations_render::render_operation;
+use operations_render::{native_schema_type_name, render_operation};
+use readme_render::render_readme;
 use schemas::{
     inline_request_schema, inline_success_schema, operation_request_name, operation_response_name,
     render_schemas, render_types, schema_model_name,
@@ -62,13 +65,13 @@ fn render_package(spec: &ApiIr) -> String {
 fn package_lines(package: &str) -> Vec<String> {
     vec![
         "{".to_string(),
-        format!("  \"name\": \"{package}-sdk\","),
+        concatenate(&["  \"name\": \"", package, "-sdk\","]),
         "  \"version\": \"0.1.0\",".to_string(),
         "  \"type\": \"module\",".to_string(),
         "  \"main\": \"./dist/index.js\",".to_string(),
         "  \"exports\": {\".\": \"./dist/index.js\"},".to_string(),
         "  \"scripts\": {\"build\": \"tsc --noEmit\", \"build:native\": \"napi build --manifest-path native/Cargo.toml --platform --release\", \"test\": \"vitest run\", \"test:native\": \"npm run build:native && npm test\", \"prepublishOnly\": \"napi prepublish -t npm --no-gh-release --root-publisher npm\"},".to_string(),
-        format!("  \"napi\": {{\"binaryName\": \"{package}-sdk\", \"packageName\": \"{package}-sdk\", \"targets\": [\"x86_64-unknown-linux-gnu\", \"x86_64-unknown-linux-musl\", \"aarch64-unknown-linux-gnu\", \"aarch64-unknown-linux-musl\", \"x86_64-apple-darwin\", \"aarch64-apple-darwin\", \"x86_64-pc-windows-msvc\"]}},"),
+        concatenate(&["  \"napi\": {\"binaryName\": \"", package, "-sdk\", \"packageName\": \"", package, "-sdk\", \"targets\": [\"x86_64-unknown-linux-gnu\", \"x86_64-unknown-linux-musl\", \"aarch64-unknown-linux-gnu\", \"aarch64-unknown-linux-musl\", \"x86_64-apple-darwin\", \"aarch64-apple-darwin\", \"x86_64-pc-windows-msvc\"]},"]),
         "  \"dependencies\": {\"zod\": \"^4.4.3\"},".to_string(),
         "  \"devDependencies\": {\"@napi-rs/cli\": \"^3.8.3\", \"@types/node\": \"^22.0.0\", \"tsx\": \"^4.20.3\", \"typescript\": \"^5.0.0\", \"vitest\": \"^3.0.0\"}".to_string(),
         "}".to_string(),
@@ -118,8 +121,16 @@ fn render_errors(spec: &ApiIr) -> String {
 fn error_file_lines(imports: &[&String], contracts: &str) -> Vec<String> {
     let mut lines = Vec::new();
     for name in imports {
-        lines.push(format!("import type {{ {name} }} from \"./types.js\";"));
-        lines.push(format!("import {{ {name}Schema }} from \"./schemas.js\";"));
+        lines.push(concatenate(&[
+            "import type { ",
+            name,
+            " } from \"./types.js\";",
+        ]));
+        lines.push(concatenate(&[
+            "import { ",
+            name,
+            "Schema } from \"./schemas.js\";",
+        ]));
     }
     lines.extend([
         "import type { NativeValue } from \"./native.js\";".to_string(),
@@ -164,8 +175,19 @@ fn has_error_responses(operation: &Operation) -> bool {
 
 fn render_error_contract(operation: &Operation, spec: &ApiIr) -> String {
     let operation_name = type_identifier(&operation.operation_id);
-    let name = format!("{operation_name}Error");
-    let variants = operation
+    let name = concatenate(&[&operation_name, "Error"]);
+    let variants = error_variants(operation, &operation_name, &name, spec);
+    let arms = error_arms(operation, &operation_name, spec);
+    CodeWriter::from_lines(error_contract_lines(&name, &arms, &variants))
+}
+
+fn error_variants(
+    operation: &Operation,
+    operation_name: &str,
+    name: &str,
+    spec: &ApiIr,
+) -> Vec<String> {
+    operation
         .responses
         .iter()
         .filter(|response| !response.status.starts_with('2'))
@@ -176,11 +198,20 @@ fn render_error_contract(operation: &Operation, spec: &ApiIr) -> String {
                 .as_ref()
                 .and_then(|schema| schema_model_name(schema, spec))
                 .unwrap_or_else(|| "NativeValue".to_string());
+            let status = status.to_string();
             Some(vec![
-                format!("export class {operation_name}Status{status}Error extends {name} {{"),
-                format!("  readonly typedBody: {body_type};"),
+                concatenate(&[
+                    "export class ",
+                    operation_name,
+                    "Status",
+                    &status,
+                    "Error extends ",
+                    name,
+                    " {",
+                ]),
+                concatenate(&["  readonly typedBody: ", &body_type, ";"]),
                 String::new(),
-                format!("  constructor(status: number, body: {body_type}) {{"),
+                concatenate(&["  constructor(status: number, body: ", &body_type, ") {"]),
                 "    super(status, body);".to_string(),
                 "    this.typedBody = body;".to_string(),
                 "  }".to_string(),
@@ -189,35 +220,75 @@ fn render_error_contract(operation: &Operation, spec: &ApiIr) -> String {
             ])
         })
         .flatten()
-        .collect::<Vec<_>>();
-    let arms = operation
+        .collect()
+}
+
+fn error_arms(operation: &Operation, operation_name: &str, spec: &ApiIr) -> Vec<String> {
+    operation
         .responses
         .iter()
         .filter(|response| !response.status.starts_with('2'))
         .filter_map(|response| {
             let status = response.status.parse::<u16>().ok()?;
+            let status = status.to_string();
             let constructor = response
                 .schema
                 .as_ref()
                 .and_then(|schema| schema_model_name(schema, spec))
-                .map_or_else(|| format!("new {operation_name}Status{status}Error({status}, result.body)"), |model| {
-                    format!("new {operation_name}Status{status}Error({status}, {model}Schema.parse(result.body))")
-                });
-            Some(format!("      case {status}: return {constructor};"))
+                .map_or_else(
+                    || {
+                        concatenate(&[
+                            "new ",
+                            operation_name,
+                            "Status",
+                            &status,
+                            "Error(",
+                            &status,
+                            ", result.body)",
+                        ])
+                    },
+                    |model| {
+                        concatenate(&[
+                            "new ",
+                            operation_name,
+                            "Status",
+                            &status,
+                            "Error(",
+                            &status,
+                            ", ",
+                            &model,
+                            "Schema.parse(result.body))",
+                        ])
+                    },
+                );
+            Some(concatenate(&[
+                "      case ",
+                &status,
+                ": return ",
+                &constructor,
+                ";",
+            ]))
         })
-        .collect::<Vec<_>>();
-    CodeWriter::from_lines(error_contract_lines(&name, &arms, &variants))
+        .collect()
 }
 
 fn error_contract_lines(name: &str, arms: &[String], variants: &[String]) -> Vec<String> {
     let mut lines = vec![
-        format!("export class {name} extends SdkHttpError {{"),
-        format!("  static from(result: {{ status: number; body: NativeValue }}): {name} {{"),
+        concatenate(&["export class ", name, " extends SdkHttpError {"]),
+        concatenate(&[
+            "  static from(result: { status: number; body: NativeValue }): ",
+            name,
+            " {",
+        ]),
         "    switch (result.status) {".to_string(),
     ];
     lines.extend(arms.iter().cloned());
     lines.extend([
-        format!("      default: return new {name}(result.status, result.body);"),
+        concatenate(&[
+            "      default: return new ",
+            name,
+            "(result.status, result.body);",
+        ]),
         "    }".to_string(),
         "  }".to_string(),
         "}".to_string(),
@@ -245,16 +316,20 @@ fn render_native_loader(spec: &ApiIr) -> String {
         .operations
         .iter()
         .map(|operation| {
-            format!(
-                "  {}({}): Promise<NativeResult>;\n",
-                ts_identifier(&operation.operation_id),
-                native_method_parameters(operation, spec)
-            )
+            concatenate(&[
+                "  ",
+                &ts_identifier(&operation.operation_id),
+                "(",
+                &native_method_parameters(operation, spec),
+                "): Promise<NativeResult>;\n",
+            ])
         })
         .collect::<String>();
-    format!(
-        "import binding from \"../native/index.js\";\nimport * as z from \"zod\";\n\nexport type NativeValue = unknown;\nexport const NativeValueSchema = z.unknown();\nexport type NativeResult = {{ ok: true; value: NativeValue }} | {{ ok: false; status: number; body: NativeValue }};\n\nexport interface NativeClient {{\n{methods}}}\n\ninterface NativeBinding {{\n  NativeClient: new (baseUrl: string) => NativeClient;\n}}\n\nconst nativeBinding = binding as NativeBinding;\n\nexport function loadNative(baseUrl: string) {{\n  return new nativeBinding.NativeClient(baseUrl);\n}}\n"
-    )
+    concatenate(&[
+        "import binding from \"../native/index.js\";\nimport * as z from \"zod\";\n\nexport type NativeValue = unknown;\nexport const NativeValueSchema = z.unknown();\nexport type NativeResult = { ok: true; value: NativeValue } | { ok: false; status: number; body: NativeValue };\n\nexport interface NativeClient {\n",
+        &methods,
+        "}\n\ninterface NativeBinding {\n  NativeClient: new (baseUrl: string) => NativeClient;\n}\n\nconst nativeBinding = binding as NativeBinding;\n\nexport function loadNative(baseUrl: string) {\n  return new nativeBinding.NativeClient(baseUrl);\n}\n",
+    ])
 }
 
 fn render_native_declaration(spec: &ApiIr) -> String {
@@ -262,16 +337,20 @@ fn render_native_declaration(spec: &ApiIr) -> String {
         .operations
         .iter()
         .map(|operation| {
-            format!(
-                "  {}({}): Promise<NativeResult>;\n",
-                ts_identifier(&operation.operation_id),
-                native_method_parameters(operation, spec)
-            )
+            concatenate(&[
+                "  ",
+                &ts_identifier(&operation.operation_id),
+                "(",
+                &native_method_parameters(operation, spec),
+                "): Promise<NativeResult>;\n",
+            ])
         })
         .collect::<String>();
-    format!(
-        "import type * as z from \"zod\";\nexport type NativeValue = unknown;\nexport declare const NativeValueSchema: z.ZodType<NativeValue>;\nexport type NativeResult = {{ ok: true; value: NativeValue }} | {{ ok: false; status: number; body: NativeValue }};\n\nexport declare class NativeClient {{\n{methods}}}\n\ndeclare const binding: {{ NativeClient: typeof NativeClient }};\nexport default binding;\n"
-    )
+    concatenate(&[
+        "import type * as z from \"zod\";\nexport type NativeValue = unknown;\nexport declare const NativeValueSchema: z.ZodType<NativeValue>;\nexport type NativeResult = { ok: true; value: NativeValue } | { ok: false; status: number; body: NativeValue };\n\nexport declare class NativeClient {\n",
+        &methods,
+        "}\n\ndeclare const binding: { NativeClient: typeof NativeClient };\nexport default binding;\n",
+    ])
 }
 
 fn native_method_parameters(operation: &Operation, spec: &ApiIr) -> String {
@@ -294,7 +373,7 @@ fn native_method_parameters(operation: &Operation, spec: &ApiIr) -> String {
                 } else {
                     native_schema_type_name(&parameter.schema, spec)
                 };
-                format!("{name}: {ty}")
+                concatenate(&[&name, ": ", &ty])
             }),
     );
     if operation
@@ -315,25 +394,23 @@ fn native_method_parameters(operation: &Operation, spec: &ApiIr) -> String {
                 } else {
                     native_schema_type_name(&parameter.schema, spec)
                 };
-                format!("{name}?: {ty}")
+                concatenate(&[&name, "?: ", &ty])
             }),
     );
     parameters.join(", ")
 }
 
 fn render_index(spec: &ApiIr) -> String {
-    format!(
-        "{}{}}}\n",
-        render_index_header(spec),
-        render_index_methods(spec)
-    )
+    let header = render_index_header(spec);
+    let methods = render_index_methods(spec);
+    concatenate(&[&header, &methods, "}\n"])
 }
 
 fn render_index_header(spec: &ApiIr) -> String {
     let mut imports = spec
         .schemas
         .keys()
-        .map(|name| format!("import {{ {name}Schema }} from \"./schemas.js\";\n"))
+        .map(|name| concatenate(&["import { ", name, "Schema } from \"./schemas.js\";\n"]))
         .collect::<String>();
     let response_names = spec
         .operations
@@ -359,9 +436,13 @@ fn render_index_header(spec: &ApiIr) -> String {
         .map(|name| type_alias_name(name))
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
-        "import * as z from \"zod\";\nimport {{ loadNative, type NativeClient, type NativeValue, NativeValueSchema }} from \"./native.js\";\nimport type {{ {types} }} from \"./types.js\";\n{imports}\nexport * from \"./schemas.js\";\nexport * from \"./types.js\";\nexport * from \"./errors.js\";\n\nexport class Client {{\n  private readonly native: NativeClient;\n\n  constructor(baseUrl: string) {{\n    this.native = loadNative(baseUrl);\n  }}\n\n"
-    )
+    concatenate(&[
+        "import * as z from \"zod\";\nimport { loadNative, type NativeClient, type NativeValue, NativeValueSchema } from \"./native.js\";\nimport type { ",
+        &types,
+        " } from \"./types.js\";\n",
+        &imports,
+        "\nexport * from \"./schemas.js\";\nexport * from \"./types.js\";\nexport * from \"./errors.js\";\n\nexport class Client {\n  private readonly native: NativeClient;\n\n  constructor(baseUrl: string) {\n    this.native = loadNative(baseUrl);\n  }\n\n",
+    ])
 }
 
 fn append_schema_imports(imports: &mut String, names: &[String]) {
@@ -369,9 +450,11 @@ fn append_schema_imports(imports: &mut String, names: &[String]) {
     names.sort();
     names.dedup();
     for name in names {
-        imports.push_str(&format!(
-            "import {{ {name}Schema }} from \"./schemas.js\";\n"
-        ));
+        imports.push_str(&concatenate(&[
+            "import { ",
+            &name,
+            "Schema } from \"./schemas.js\";\n",
+        ]));
     }
 }
 
@@ -381,10 +464,12 @@ fn append_error_imports(imports: &mut String, spec: &ApiIr) {
         .iter()
         .filter(|operation| has_error_responses(operation))
     {
-        imports.push_str(&format!(
-            "import {{ {}Error }} from \"./errors.js\";\n",
-            type_identifier(&operation.operation_id)
-        ));
+        let name = type_identifier(&operation.operation_id);
+        imports.push_str(&concatenate(&[
+            "import { ",
+            &name,
+            "Error } from \"./errors.js\";\n",
+        ]));
     }
 }
 
@@ -405,31 +490,16 @@ fn schema_type_name(schema: &Schema, spec: &ApiIr) -> String {
         Schema::Integer { .. } | Schema::Number { .. } => "number".to_string(),
         Schema::Boolean => "boolean".to_string(),
         Schema::Null => "null".to_string(),
-        Schema::Array(item) => format!("{}[]", schema_type_name(item, spec)),
+        Schema::Array(item) => concatenate(&[&schema_type_name(item, spec), "[]"]),
         _ => "NativeValue".to_string(),
     }
 }
 
 pub(super) fn type_alias_name(name: &str) -> String {
     if name.ends_with("Schema") {
-        format!("{name}Type")
+        concatenate(&[name, "Type"])
     } else {
         name.to_string()
-    }
-}
-
-fn native_schema_type_name(schema: &Schema, spec: &ApiIr) -> String {
-    match schema {
-        Schema::String {
-            format: Some(format),
-        } if format == "binary" => "Uint8Array".to_string(),
-        Schema::String { .. } => "string".to_string(),
-        Schema::Integer { .. } | Schema::Number { .. } => "number".to_string(),
-        Schema::Boolean => "boolean".to_string(),
-        _ => {
-            let _ = spec;
-            "NativeValue".to_string()
-        }
     }
 }
 
@@ -445,12 +515,4 @@ fn ordered_parameters(operation: &Operation) -> Vec<&crate::Parameter> {
                 .filter(|parameter| !parameter.required),
         )
         .collect()
-}
-
-fn render_readme(spec: &ApiIr) -> String {
-    CodeWriter::from_lines([
-        ["# ", &spec.title, " TypeScript SDK"].concat(),
-        String::new(),
-        "Install dependencies, then run `npm run test:native`. The command builds the Rust-backed napi-rs addon, starts a local mock API, and verifies runtime response validation with Zod.".to_string(),
-    ])
 }

@@ -1,30 +1,39 @@
 use super::identifiers::{ts_property, type_identifier};
 use super::type_alias_name;
-use crate::code_writer::CodeWriter;
+use crate::code_writer::{CodeWriter, concatenate};
 use crate::{ApiIr, Operation, Schema};
 
 pub(super) fn render_schemas(spec: &ApiIr) -> String {
     let mut declarations = Vec::new();
     for (name, schema) in &spec.schemas {
-        declarations.push(format!(
-            "export const {name}Schema = {};",
-            zod_schema(schema, spec)
-        ));
+        declarations.push(concatenate(&[
+            "export const ",
+            name,
+            "Schema = ",
+            &zod_schema(schema, spec),
+            ";",
+        ]));
     }
     for operation in &spec.operations {
         if let Some(schema) = inline_success_schema(operation, spec) {
-            declarations.push(format!(
-                "export const {}Schema = {};",
-                operation_response_name(operation),
-                zod_schema(schema, spec)
-            ));
+            let name = operation_response_name(operation);
+            declarations.push(concatenate(&[
+                "export const ",
+                &name,
+                "Schema = ",
+                &zod_schema(schema, spec),
+                ";",
+            ]));
         }
         if let Some(schema) = inline_request_schema(operation, spec) {
-            declarations.push(format!(
-                "export const {}Schema = {};",
-                operation_request_name(operation),
-                zod_schema(schema, spec)
-            ));
+            let name = operation_request_name(operation);
+            declarations.push(concatenate(&[
+                "export const ",
+                &name,
+                "Schema = ",
+                &zod_schema(schema, spec),
+                ";",
+            ]));
         }
     }
     let mut lines = vec!["import * as z from \"zod\";".to_string(), String::new()];
@@ -41,7 +50,7 @@ pub(super) fn render_types(spec: &ApiIr) -> String {
     let schemas = schema_names.join(", ");
     let mut lines = vec![
         "import type * as z from \"zod\";".to_string(),
-        format!("import {{ {schemas} }} from \"./schemas.js\";"),
+        concatenate(&["import { ", &schemas, " } from \"./schemas.js\";"]),
         String::new(),
     ];
     lines.extend(type_alias_lines(spec));
@@ -52,7 +61,7 @@ fn schema_names(spec: &ApiIr) -> Vec<String> {
     let mut names = spec
         .schemas
         .keys()
-        .map(|name| format!("{name}Schema"))
+        .map(|name| concatenate(&[name, "Schema"]))
         .collect::<Vec<_>>();
     names.extend(
         spec.operations
@@ -68,7 +77,7 @@ fn schema_names(spec: &ApiIr) -> Vec<String> {
                 ]
             })
             .flatten()
-            .map(|name| format!("{name}Schema")),
+            .map(|name| concatenate(&[&name, "Schema"])),
     );
     names.sort();
     names.dedup();
@@ -78,10 +87,14 @@ fn schema_names(spec: &ApiIr) -> Vec<String> {
 fn type_alias_lines(spec: &ApiIr) -> Vec<String> {
     let mut lines = Vec::new();
     for name in spec.schemas.keys() {
-        lines.push(format!(
-            "export type {} = z.infer<typeof {name}Schema>;",
-            type_alias_name(name)
-        ));
+        let alias = type_alias_name(name);
+        lines.push(concatenate(&[
+            "export type ",
+            &alias,
+            " = z.infer<typeof ",
+            name,
+            "Schema>;",
+        ]));
     }
     for operation in &spec.operations {
         for name in [
@@ -95,9 +108,13 @@ fn type_alias_lines(spec: &ApiIr) -> Vec<String> {
         .into_iter()
         .flatten()
         {
-            lines.push(format!(
-                "export type {name} = z.infer<typeof {name}Schema>;"
-            ));
+            lines.push(concatenate(&[
+                "export type ",
+                &name,
+                " = z.infer<typeof ",
+                &name,
+                "Schema>;",
+            ]));
         }
     }
     lines
@@ -134,11 +151,11 @@ pub(super) fn inline_request_schema<'a>(
 }
 
 pub(super) fn operation_request_name(operation: &Operation) -> String {
-    format!("{}Request", type_identifier(&operation.operation_id))
+    concatenate(&[&type_identifier(&operation.operation_id), "Request"])
 }
 
 pub(super) fn operation_response_name(operation: &Operation) -> String {
-    format!("{}Response", type_identifier(&operation.operation_id))
+    concatenate(&[&type_identifier(&operation.operation_id), "Response"])
 }
 
 fn zod_schema(schema: &Schema, spec: &ApiIr) -> String {
@@ -152,39 +169,39 @@ fn zod_schema(schema: &Schema, spec: &ApiIr) -> String {
         Schema::Number { .. } => "z.number()".to_string(),
         Schema::Boolean => "z.boolean()".to_string(),
         Schema::Null => "z.null()".to_string(),
-        Schema::Array(item) => format!("z.array({})", zod_schema(item, spec)),
+        Schema::Array(item) => concatenate(&["z.array(", &zod_schema(item, spec), ")"]),
         Schema::Object { .. } => zod_object_schema(schema, spec),
-        Schema::Enum(values) => format!(
-            "z.enum([{}])",
-            values
+        Schema::Enum(values) => {
+            let values = values
                 .iter()
-                .map(|value| format!("{value:?}"))
+                .map(|value| serde_json::to_string(value).unwrap_or_default())
                 .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Schema::TypedEnum { values, .. } => format!(
-            "z.union([{}])",
-            values
+                .join(", ");
+            concatenate(&["z.enum([", &values, "])"])
+        }
+        Schema::TypedEnum { values, .. } => {
+            let values = values
                 .iter()
-                .map(|value| format!("z.literal({value})"))
+                .map(|value| concatenate(&["z.literal(", &value.to_string(), ")"]))
                 .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Schema::Const { value, .. } => format!("z.literal({value})"),
-        Schema::Reference(name) => format!("z.lazy(() => {name}Schema)"),
-        Schema::Nullable(inner) => format!("{}.nullable()", zod_schema(inner, spec)),
-        Schema::OneOf(values) | Schema::AnyOf(values) => format!(
-            "z.union([{}])",
-            values
+                .join(", ");
+            concatenate(&["z.union([", &values, "])"])
+        }
+        Schema::Const { value, .. } => concatenate(&["z.literal(", &value.to_string(), ")"]),
+        Schema::Reference(name) => concatenate(&["z.lazy(() => ", name, "Schema)"]),
+        Schema::Nullable(inner) => concatenate(&[&zod_schema(inner, spec), ".nullable()"]),
+        Schema::OneOf(values) | Schema::AnyOf(values) => {
+            let values = values
                 .iter()
                 .map(|value| zod_schema(value, spec))
                 .collect::<Vec<_>>()
-                .join(", ")
-        ),
+                .join(", ");
+            concatenate(&["z.union([", &values, "])"])
+        }
         Schema::AllOf(values) => values
             .iter()
             .map(|value| zod_schema(value, spec))
-            .reduce(|left, right| format!("z.intersection({left}, {right})"))
+            .reduce(|left, right| concatenate(&["z.intersection(", &left, ", ", &right, ")"]))
             .unwrap_or_else(|| "z.never()".to_string()),
     }
 }
@@ -206,18 +223,20 @@ fn zod_object_schema(schema: &Schema, spec: &ApiIr) -> String {
             } else {
                 ".optional()"
             };
-            format!(
-                "  {}: {}{},",
-                ts_property(name),
-                zod_schema(value, spec),
-                optional
-            )
+            concatenate(&[
+                "  ",
+                &ts_property(name),
+                ": ",
+                &zod_schema(value, spec),
+                optional,
+                ",",
+            ])
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let object = format!("z.object({{\n{fields}\n}})");
+    let object = concatenate(&["z.object({\n", &fields, "\n})"]);
     match additional_properties.as_deref() {
-        Some(value) => format!("{object}.catchall({})", zod_schema(value, spec)),
-        None => format!("{object}.strict()"),
+        Some(value) => concatenate(&[&object, ".catchall(", &zod_schema(value, spec), ")"]),
+        None => concatenate(&[&object, ".strict()"]),
     }
 }

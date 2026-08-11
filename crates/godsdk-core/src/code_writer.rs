@@ -51,3 +51,11 @@ impl CodeWriter {
         self.output
     }
 }
+
+pub(crate) fn concatenate(parts: &[&str]) -> String {
+    let mut output = String::new();
+    for part in parts {
+        output.push_str(part);
+    }
+    output
+}

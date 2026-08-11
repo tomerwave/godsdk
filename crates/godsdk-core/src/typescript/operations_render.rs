@@ -1,4 +1,4 @@
-use crate::code_writer::CodeWriter;
+use crate::code_writer::{CodeWriter, concatenate};
 use crate::rust_ast::{inline_parameter_type_name, inline_request_body_type_name};
 use crate::{ApiIr, Operation, ParameterLocation, Schema, rust_identifier};
 use proc_macro2::TokenStream;
@@ -9,9 +9,26 @@ use super::{
     schema_type_name, ts_identifier, type_identifier,
 };
 
+pub(super) fn native_schema_type_name(schema: &Schema, spec: &ApiIr) -> String {
+    match schema {
+        Schema::String {
+            format: Some(format),
+        } if format == "binary" => "Uint8Array".to_string(),
+        Schema::String { .. } => "string".to_string(),
+        Schema::Integer { .. } | Schema::Number { .. } => "number".to_string(),
+        Schema::Boolean => "boolean".to_string(),
+        _ => {
+            let _ = spec;
+            "NativeValue".to_string()
+        }
+    }
+}
+
 fn schema_validator_name(schema: &Schema, spec: &ApiIr) -> String {
     match schema {
-        Schema::Reference(name) if spec.schemas.contains_key(name) => format!("{name}Schema"),
+        Schema::Reference(name) if spec.schemas.contains_key(name) => {
+            concatenate(&[name, "Schema"])
+        }
         _ => "NativeValueSchema".to_string(),
     }
 }
@@ -53,7 +70,7 @@ fn public_parameters(operation: &Operation, spec: &ApiIr) -> String {
             .as_ref()
             .map(|schema| schema_type_name(schema, spec))
             .unwrap_or_else(|| "NativeValue".to_string());
-        parameters.push(format!("requestBody: {ty}"));
+        parameters.push(concatenate(&["requestBody: ", &ty]));
     }
     parameters.extend(
         ordered_parameters(operation)
@@ -62,7 +79,7 @@ fn public_parameters(operation: &Operation, spec: &ApiIr) -> String {
             .map(|parameter| {
                 let name = ts_identifier(&parameter.name);
                 let ty = schema_type_name(&parameter.schema, spec);
-                format!("{name}: {ty}")
+                concatenate(&[&name, ": ", &ty])
             }),
     );
     if let Some(body) = operation
@@ -75,7 +92,7 @@ fn public_parameters(operation: &Operation, spec: &ApiIr) -> String {
             .as_ref()
             .map(|schema| schema_type_name(schema, spec))
             .unwrap_or_else(|| "NativeValue".to_string());
-        parameters.push(format!("requestBody?: {ty}"));
+        parameters.push(concatenate(&["requestBody?: ", &ty]));
     }
     parameters.extend(
         ordered_parameters(operation)
@@ -84,7 +101,7 @@ fn public_parameters(operation: &Operation, spec: &ApiIr) -> String {
             .map(|parameter| {
                 let name = ts_identifier(&parameter.name);
                 let ty = schema_type_name(&parameter.schema, spec);
-                format!("{name}?: {ty}")
+                concatenate(&[&name, "?: ", &ty])
             }),
     );
     parameters.join(", ")
@@ -120,10 +137,11 @@ fn public_arguments(operation: &Operation, spec: &ApiIr) -> String {
             .as_ref()
             .map(|schema| schema_validator_name(schema, spec))
             .unwrap_or_else(|| "NativeValueSchema".to_string());
-        arguments.push(format!(
-            "requestBody === undefined ? undefined : {}",
-            native_json_argument(body, &schema, "requestBody")
-        ));
+        let argument = native_json_argument(body, &schema, "requestBody");
+        arguments.push(concatenate(&[
+            "requestBody === undefined ? undefined : ",
+            &argument,
+        ]));
     }
     arguments.extend(
         ordered_parameters(operation)
@@ -137,11 +155,15 @@ fn public_arguments(operation: &Operation, spec: &ApiIr) -> String {
 fn native_json_argument(body: &crate::RequestBody, schema: &str, variable: &str) -> String {
     if body.content_type == "multipart/form-data" || body.content_type == "application/octet-stream"
     {
-        format!(
-            "JSON.stringify({schema}.parse({variable}), (_key, value) => value instanceof Uint8Array ? Array.from(value) : value)"
-        )
+        concatenate(&[
+            "JSON.stringify(",
+            schema,
+            ".parse(",
+            variable,
+            "), (_key, value) => value instanceof Uint8Array ? Array.from(value) : value)",
+        ])
     } else {
-        format!("JSON.stringify({schema}.parse({variable}))")
+        concatenate(&["JSON.stringify(", schema, ".parse(", variable, "))"])
     }
 }
 
@@ -163,14 +185,14 @@ fn public_result(operation: &Operation, spec: &ApiIr) -> (String, String, String
         |response| {
             let model = schema_model_name(response, spec)
                 .unwrap_or_else(|| operation_response_name(operation));
-            format!("    return {model}Schema.parse(result.value);\n")
+            concatenate(&["    return ", &model, "Schema.parse(result.value);\n"])
         },
     );
     let error = has_error_responses(operation)
-        .then(|| format!("{}Error", type_identifier(&operation.operation_id)));
+        .then(|| concatenate(&[&type_identifier(&operation.operation_id), "Error"]));
     let error_handling = error.map_or_else(
         || "      throw new SdkHttpError(result.status, result.body);\n".to_string(),
-        |error| format!("      throw {error}.from(result);\n"),
+        |error| concatenate(&["      throw ", &error, ".from(result);\n"]),
     );
     (return_type, success, error_handling)
 }
@@ -213,12 +235,12 @@ fn native_inputs(operation: &Operation, crate_name: &str) -> (String, String, St
         .iter()
         .map(|parameter| {
             let name = rust_identifier(&parameter.name);
-            format!("{name}: {name}")
+            concatenate(&[&name, ": ", &name])
         })
         .collect::<Vec<_>>();
     if let Some(body) = native_body_input(operation, crate_name) {
         conversions.push(body.0);
-        fields.push(format!("request_body: {}", body.1));
+        fields.push(concatenate(&["request_body: ", &body.1]));
     }
     if let Some(body) = operation.request_body_details.as_ref() {
         parameters.insert(
@@ -233,11 +255,14 @@ fn native_inputs(operation: &Operation, crate_name: &str) -> (String, String, St
     (
         parameters.concat(),
         conversions.concat(),
-        format!(
-            "{crate_name}::{}Request {{ {} }}",
-            type_identifier(&operation.operation_id),
-            fields.join(", "),
-        ),
+        concatenate(&[
+            crate_name,
+            "::",
+            &type_identifier(&operation.operation_id),
+            "Request { ",
+            &fields.join(", "),
+            " }",
+        ]),
     )
 }
 
@@ -248,25 +273,37 @@ fn native_parameter(
 ) -> (String, String, String) {
     let name = rust_identifier(&parameter.name);
     if parameter.location == ParameterLocation::Path {
-        return (format!(", {name}: String"), String::new(), name);
+        return (concatenate(&[", ", &name, ": String"]), String::new(), name);
     }
     let ty = native_inline_type(&parameter.schema, crate_name, || {
         inline_parameter_type_name(operation, parameter)
     })
     .unwrap_or_else(|| native_rust_schema_type(&parameter.schema, crate_name));
     let signature = if parameter.required {
-        format!(", {name}: serde_json::Value")
+        concatenate(&[", ", &name, ": serde_json::Value"])
     } else {
-        format!(", {name}: Option<serde_json::Value>")
+        concatenate(&[", ", &name, ": Option<serde_json::Value>"])
     };
     let conversion = if parameter.required {
-        format!(
-            "        let {name}: {ty} = serde_json::from_value({name}).map_err(to_napi_error)?;\n"
-        )
+        concatenate(&[
+            "        let ",
+            &name,
+            ": ",
+            &ty,
+            " = serde_json::from_value(",
+            &name,
+            ").map_err(to_napi_error)?;\n",
+        ])
     } else {
-        format!(
-            "        let {name}: Option<{ty}> = {name}.map(serde_json::from_value).transpose().map_err(to_napi_error)?;\n"
-        )
+        concatenate(&[
+            "        let ",
+            &name,
+            ": Option<",
+            &ty,
+            "> = ",
+            &name,
+            ".map(serde_json::from_value).transpose().map_err(to_napi_error)?;\n",
+        ])
     };
     (signature, conversion, name)
 }
@@ -280,16 +317,20 @@ fn native_body_input(operation: &Operation, crate_name: &str) -> Option<(String,
     .unwrap_or_else(|| native_rust_schema_type(schema, crate_name));
     if body.required {
         Some((
-            format!(
-                "        let request_body: {ty} = serde_json::from_str(&request_body).map_err(to_napi_error)?;\n"
-            ),
+            concatenate(&[
+                "        let request_body: ",
+                &ty,
+                " = serde_json::from_str(&request_body).map_err(to_napi_error)?;\n",
+            ]),
             "request_body".to_string(),
         ))
     } else {
         Some((
-            format!(
-                "        let request_body: Option<{ty}> = request_body.map(|value| serde_json::from_str(&value)).transpose().map_err(to_napi_error)?;\n"
-            ),
+            concatenate(&[
+                "        let request_body: Option<",
+                &ty,
+                "> = request_body.map(|value| serde_json::from_str(&value)).transpose().map_err(to_napi_error)?;\n",
+            ]),
             "request_body".to_string(),
         ))
     }
@@ -297,7 +338,7 @@ fn native_body_input(operation: &Operation, crate_name: &str) -> Option<(String,
 
 fn native_call_body(operation: &Operation, method: &str, arguments: &str) -> String {
     if has_error_responses(operation) {
-        let error_type = format!("{}Error", type_identifier(&operation.operation_id));
+        let error_type = concatenate(&[&type_identifier(&operation.operation_id), "Error"]);
         CodeWriter::from_parts([
             "        match self.inner.".to_string(), method.to_string(), "(".to_string(), arguments.to_string(), ").await {\n".to_string(),
             "            Ok(value) => Ok(serde_json::json!({\"ok\": true, \"value\": value})),\n            Err(".to_string(),
@@ -348,7 +389,7 @@ fn native_error_arm(response: &crate::Response, error_type: &str) -> Option<Stri
 
 fn native_rust_schema_type(schema: &Schema, crate_name: &str) -> String {
     match schema {
-        Schema::Reference(name) => format!("{crate_name}::{}", type_identifier(name)),
+        Schema::Reference(name) => concatenate(&[crate_name, "::", &type_identifier(name)]),
         Schema::String {
             format: Some(format),
         } if format == "binary" => "Vec<u8>".to_string(),
@@ -357,7 +398,9 @@ fn native_rust_schema_type(schema: &Schema, crate_name: &str) -> String {
         Schema::Integer { .. } => "i64".to_string(),
         Schema::Number { .. } => "f64".to_string(),
         Schema::Boolean => "bool".to_string(),
-        Schema::Array(item) => format!("Vec<{}>", native_rust_schema_type(item, crate_name)),
+        Schema::Array(item) => {
+            concatenate(&["Vec<", &native_rust_schema_type(item, crate_name), ">"])
+        }
         _ => "serde_json::Value".to_string(),
     }
 }

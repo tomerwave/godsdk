@@ -1,0 +1,39 @@
+openapi: 3.1.0
+info:
+  title: Deterministic Order API
+  version: 1.0.0
+paths:
+  /z:
+    get:
+      operationId: zOperation
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Z'
+  /a:
+    get:
+      operationId: aOperation
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/A'
+components:
+  schemas:
+    Z:
+      type: object
+      required: [z]
+      properties:
+        z:
+          type: string
+    A:
+      type: object
+      required: [a]
+      properties:
+        a:
+          type: integer

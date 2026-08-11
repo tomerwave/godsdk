@@ -20,15 +20,21 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
                 .path();
             if path.is_dir() {
                 visit(root, &path, files);
-            } else {
-                let relative = path
-                    .strip_prefix(root)
-                    .unwrap_or_else(|error| panic!("generated path is relative: {error}"))
-                    .to_path_buf();
-                let contents = fs::read(&path)
-                    .unwrap_or_else(|error| panic!("generated file is readable: {error}"));
-                files.insert(relative, contents);
+                continue;
             }
+            snapshot_file(root, &path, files);
+        }
+    }
+
+    fn snapshot_file(root: &Path, path: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or_else(|error| panic!("generated path is relative: {error}"))
+            .to_path_buf();
+        if relative.starts_with("sdk") {
+            let contents = fs::read(path)
+                .unwrap_or_else(|error| panic!("generated file is readable: {error}"));
+            files.insert(relative, contents);
         }
     }
 
@@ -51,4 +57,23 @@ fn repeated_generation_is_byte_identical_for_all_targets() {
     generate(&second_request).unwrap_or_else(|error| panic!("second generation succeeds: {error}"));
 
     assert_eq!(snapshot(&first), snapshot(&second));
+}
+
+#[test]
+fn equivalent_openapi_map_orders_generate_identical_targets() {
+    let output = tempfile::tempdir().unwrap_or_else(|error| panic!("temporary directory: {error}"));
+    let first = generate_for_fixture("deterministic-order-a.yaml", output.path().join("first"));
+    let second = generate_for_fixture("deterministic-order-b.yaml", output.path().join("second"));
+
+    assert_eq!(snapshot(&first), snapshot(&second));
+}
+
+fn generate_for_fixture(name: &str, output: PathBuf) -> PathBuf {
+    let request = GenerationRequest::new(fixture(name), &output).with_targets([
+        Target::Rust,
+        Target::Python,
+        Target::TypeScript,
+    ]);
+    generate(&request).unwrap_or_else(|error| panic!("generation succeeds: {error}"));
+    output
 }

@@ -1,4 +1,5 @@
 use crate::code_writer::CodeWriter;
+use crate::rust_ast::{inline_parameter_type_name, inline_request_body_type_name};
 use crate::{Operation, ParameterLocation, Schema, rust_identifier};
 
 use super::{
@@ -323,7 +324,7 @@ pub(super) fn native_method(operation: &Operation, crate_name: &str) -> String {
 fn native_inputs(operation: &Operation, crate_name: &str) -> (String, String, String) {
     let inputs = ordered_parameters(operation)
         .iter()
-        .map(|parameter| native_parameter(parameter, crate_name))
+        .map(|parameter| native_parameter(operation, parameter, crate_name))
         .collect::<Vec<_>>();
     let mut parameters = inputs
         .iter()
@@ -370,7 +371,11 @@ fn native_inputs(operation: &Operation, crate_name: &str) -> (String, String, St
     )
 }
 
-fn native_parameter(parameter: &crate::Parameter, crate_name: &str) -> (String, String, String) {
+fn native_parameter(
+    operation: &Operation,
+    parameter: &crate::Parameter,
+    crate_name: &str,
+) -> (String, String, String) {
     let name = rust_identifier(&parameter.name);
     if parameter.location == ParameterLocation::Path {
         return (
@@ -379,7 +384,10 @@ fn native_parameter(parameter: &crate::Parameter, crate_name: &str) -> (String, 
             name,
         );
     }
-    let ty = native_rust_schema_type(&parameter.schema, crate_name);
+    let ty = native_inline_type(&parameter.schema, crate_name, || {
+        inline_parameter_type_name(operation, parameter)
+    })
+    .unwrap_or_else(|| native_rust_schema_type(&parameter.schema, crate_name));
     let signature = if parameter.required {
         [", ".to_string(), name.clone(), ": String".to_string()].concat()
     } else {
@@ -390,36 +398,43 @@ fn native_parameter(parameter: &crate::Parameter, crate_name: &str) -> (String, 
         ]
         .concat()
     };
-    let conversion = if parameter.required {
+    let conversion = native_parameter_conversion(&name, &ty, parameter.required);
+    (signature, conversion, name)
+}
+
+fn native_parameter_conversion(name: &str, ty: &str, required: bool) -> String {
+    if required {
         [
             "        let ",
-            name.as_str(),
+            name,
             ": ",
-            ty.as_str(),
+            ty,
             " = serde_json::from_str(&",
-            name.as_str(),
+            name,
             ").map_err(to_python_error)?;\n",
         ]
         .concat()
     } else {
         [
             "        let ",
-            name.as_str(),
+            name,
             ": Option<",
-            ty.as_str(),
+            ty,
             "> = ",
-            name.as_str(),
+            name,
             ".map(|value| serde_json::from_str(&value)).transpose().map_err(to_python_error)?;\n",
         ]
         .concat()
-    };
-    (signature, conversion, name)
+    }
 }
 
 fn native_body_input(operation: &Operation, crate_name: &str) -> Option<(String, String)> {
     let body = operation.request_body_details.as_ref()?;
     let schema = body.schema.as_ref()?;
-    let ty = native_rust_schema_type(schema, crate_name);
+    let ty = native_inline_type(schema, crate_name, || {
+        inline_request_body_type_name(operation)
+    })
+    .unwrap_or_else(|| native_rust_schema_type(schema, crate_name));
     if body.required {
         Some((
             [
@@ -480,5 +495,17 @@ fn native_rust_schema_type(schema: &Schema, crate_name: &str) -> String {
         ]
         .concat(),
         _ => "serde_json::Value".to_string(),
+    }
+}
+
+fn native_inline_type<F>(schema: &Schema, crate_name: &str, name: F) -> Option<String>
+where
+    F: FnOnce() -> syn::Ident,
+{
+    if matches!(schema, Schema::TypedEnum { .. } | Schema::Const { .. }) {
+        let name = name().to_string();
+        Some([crate_name, "::", &name].concat())
+    } else {
+        None
     }
 }

@@ -4,6 +4,7 @@ use quote::quote;
 pub(super) fn render() -> TokenStream {
     let helpers = [
         path_encoding(),
+        form_body_helper(),
         value_helpers(),
         pair_helpers(),
         path_helpers(),
@@ -13,6 +14,19 @@ pub(super) fn render() -> TokenStream {
         #![allow(dead_code)]
         use super::SdkError;
         #(#helpers)*
+
+    }
+}
+
+fn form_body_helper() -> TokenStream {
+    quote! {
+        pub(crate) fn serialize_form_body<T: serde::Serialize>(
+            value: T,
+        ) -> Result<Vec<u8>, SdkError> {
+            let encoded = serde_urlencoded::to_string(value)
+                .map_err(|error| SdkError::Serialization(error.to_string()))?;
+            Ok(encoded.into_bytes())
+        }
 
     }
 }

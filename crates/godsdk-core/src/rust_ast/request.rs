@@ -4,14 +4,19 @@ use quote::{format_ident, quote};
 use crate::{ApiIr, Operation, ParameterLocation, ParameterStyle, RequestBody, Schema};
 
 use super::operations::{
-    error_decoder_name, inline_parameter_type_name, inline_request_body_type_name, method_tokens,
-    response_decode,
+    error_decoder_name, has_success_schema, inline_parameter_type_name,
+    inline_request_body_type_name, method_tokens, response_decode,
 };
 use super::{literal, rust_identifier};
 
 mod multipart;
+#[path = "request_body.rs"]
+mod request_body;
 mod types;
 use multipart::binary_fields;
+use request_body::{
+    form_request_body_argument, optional_body_bytes, request_body_expression, required_body_bytes,
+};
 use types::parameter_type;
 
 pub(super) struct RequestParts {
@@ -51,6 +56,7 @@ pub(super) fn operation_body(args: OperationBodyArgs<'_>) -> TokenStream {
         options_helper,
     } = args;
     let decode = response_decode(operation, response_type, error_type);
+    let body = has_success_schema(operation).then(|| quote! { let body = response.body; });
     let http_method = method_tokens(operation.method);
     match error_type {
         Some(error_type) => {
@@ -62,7 +68,7 @@ pub(super) fn operation_body(args: OperationBodyArgs<'_>) -> TokenStream {
                     .await
                     .map_err(#error_type::Transport)?;
                 if (200..300).contains(&response.status) {
-                    let body = response.body;
+                    #body
                     #decode
                 } else {
                     Err(#decoder(response))
@@ -74,7 +80,7 @@ pub(super) fn operation_body(args: OperationBodyArgs<'_>) -> TokenStream {
             let options = Self::#options_helper(&request)?;
             let response = self.request(Method::#http_method, &path, options).await?;
             if (200..300).contains(&response.status) {
-                let body = response.body;
+                #body
                 #decode
             } else {
             Err(SdkError::Http {
@@ -125,7 +131,7 @@ pub(super) fn operation_helpers(
 
         fn #body_helper(request: &#request_type) -> Result<Option<RequestBody>, SdkError> {
             #body_destructure
-            Ok(#body)
+            #body
         }
 
         fn #options_helper(request: &#request_type) -> Result<RequestOptions, SdkError> {
@@ -182,7 +188,10 @@ fn request_destructuring(
         .filter(|body| {
             matches!(
                 body.content_type.as_str(),
-                "application/json" | "multipart/form-data" | "application/octet-stream"
+                "application/json"
+                    | "application/x-www-form-urlencoded"
+                    | "multipart/form-data"
+                    | "application/octet-stream"
             )
         })
         .map(|_| vec![format_ident!("request_body")])
@@ -449,32 +458,42 @@ fn request_body_argument(
     arguments: &mut Vec<TokenStream>,
 ) -> TokenStream {
     let Some(request_body) = operation.request_body_details.as_ref() else {
-        return quote! { None };
+        return quote! { Ok(None) };
     };
     let body_type = request_body_type(operation, spec, request_body);
-    let name = format_ident!("request_body");
+    if request_body.content_type == "application/x-www-form-urlencoded" {
+        return form_request_body_argument(request_body, body_type, arguments);
+    }
     let binary_fields = binary_fields(request_body.schema.as_ref(), spec);
+    non_form_request_body_argument(request_body, body_type, binary_fields, arguments)
+}
+
+fn non_form_request_body_argument(
+    request_body: &RequestBody,
+    body_type: TokenStream,
+    binary_fields: Vec<syn::LitStr>,
+    arguments: &mut Vec<TokenStream>,
+) -> TokenStream {
+    let name = format_ident!("request_body");
     if request_body.required {
         arguments.push(quote! { #name: #body_type });
         let bytes = required_body_bytes(&request_body.content_type, &name);
-        let body_expression =
-            request_body_expression(&request_body.content_type, &binary_fields, quote! { bytes });
+        let body_expression = request_body_expression(&request_body.content_type, &binary_fields);
         quote! {
-            {
+            Ok({
                 let bytes = #bytes;
                 Some(#body_expression)
-            }
+            })
         }
     } else {
         arguments.push(quote! { #name: Option<#body_type> });
         let bytes = optional_body_bytes(&request_body.content_type);
-        let body_expression =
-            request_body_expression(&request_body.content_type, &binary_fields, quote! { bytes });
+        let body_expression = request_body_expression(&request_body.content_type, &binary_fields);
         quote! {
-            #name.map(|value| {
+            Ok(#name.map(|value| {
                 let bytes = #bytes;
                 #body_expression
-            })
+            }))
         }
     }
 }
@@ -493,33 +512,4 @@ fn request_body_type(
             parameter_type(schema, spec, inline.as_ref())
         })
         .unwrap_or_else(|| quote! { serde_json::Value })
-}
-
-fn request_body_expression(
-    content_type: &str,
-    binary_fields: &[syn::LitStr],
-    bytes: TokenStream,
-) -> TokenStream {
-    let content_type_literal = literal(content_type);
-    if content_type == "multipart/form-data" {
-        quote! { RequestBody::Multipart { bytes, binary_fields: &[#(#binary_fields),*] } }
-    } else {
-        quote! { RequestBody::Bytes { content_type: #content_type_literal, bytes: #bytes } }
-    }
-}
-
-fn required_body_bytes(content_type: &str, name: &syn::Ident) -> TokenStream {
-    if content_type == "application/octet-stream" {
-        quote! { #name }
-    } else {
-        quote! { serde_json::to_vec(&#name).map_err(|error| SdkError::Serialization(error.to_string()))? }
-    }
-}
-
-fn optional_body_bytes(content_type: &str) -> TokenStream {
-    if content_type == "application/octet-stream" {
-        quote! { value }
-    } else {
-        quote! { serde_json::to_vec(&value).map_err(|error| SdkError::Serialization(error.to_string()))? }
-    }
 }

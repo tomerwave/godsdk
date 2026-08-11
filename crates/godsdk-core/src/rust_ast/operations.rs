@@ -361,6 +361,9 @@ pub(super) fn response_decode(
         || quote! { SdkError::Serialization(error.to_string()) },
         |error_type| quote! { #error_type::Transport(SdkError::Serialization(error.to_string())) },
     );
+    if !has_success_schema(operation) {
+        return quote! { Ok(()) };
+    }
     if is_string_response(operation) {
         if is_binary_response(operation) {
             return quote! { Ok(body) };
@@ -378,6 +381,13 @@ fn is_binary_response(operation: &Operation) -> bool {
         .find(|response| response.status.starts_with('2') && response.schema.is_some())
         .and_then(|response| response.schema.as_ref())
         .is_some_and(|schema| matches!(schema, Schema::String { format: Some(format) } if format == "binary"))
+}
+
+pub(super) fn has_success_schema(operation: &Operation) -> bool {
+    operation
+        .responses
+        .iter()
+        .any(|response| response.status.starts_with('2') && response.schema.is_some())
 }
 
 pub(super) fn method_tokens(method: HttpMethod) -> proc_macro2::Ident {
@@ -407,7 +417,7 @@ fn response_type(operation: &Operation, spec: &ApiIr) -> TokenStream {
                 .then(|| inline_response_type_name(operation));
             schema_tokens_with_inline(schema, spec, inline.as_ref())
         })
-        .unwrap_or_else(|| quote! { String })
+        .unwrap_or_else(|| quote! { () })
 }
 
 fn is_string_response(operation: &Operation) -> bool {
